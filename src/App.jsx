@@ -90,19 +90,28 @@ const todayStr = () => new Date().toISOString().split("T")[0];
 // Returns all dates a recurring task/meeting appears on, within a date range
 function expandRecurring(item, rangeStart, rangeEnd) {
   const dates = [];
-  const baseStr = item.date || item.due_date;
+  // For recurring items: start from start_date (or date/due_date as fallback)
+  // recurrence_end is when repetitions stop
+  const baseStr = item.start_date || item.date || item.due_date;
   if (!baseStr) return [];
   const base = new Date(baseStr + "T00:00:00");
   if (isNaN(base)) return [baseStr];
-  const end = item.recurrence_end ? new Date(item.recurrence_end + "T00:00:00") : new Date(rangeEnd + "T00:00:00");
-  const rEnd   = end   < new Date(rangeEnd   + "T00:00:00") ? end   : new Date(rangeEnd   + "T00:00:00");
-  const rStart = new Date(rangeStart + "T00:00:00");
 
-  if (!item.recurrence) return [baseStr];
+  if (!item.recurrence) {
+    // Not recurring — just return the single date
+    return [item.date || item.due_date].filter(Boolean);
+  }
+
+  // End: recurrence_end if set, otherwise cap at rangeEnd
+  const endStr = item.recurrence_end || rangeEnd;
+  const rEnd   = new Date(endStr + "T00:00:00");
+  const rCap   = new Date(rangeEnd + "T00:00:00");
+  const effectiveEnd = rEnd < rCap ? rEnd : rCap;
+  const rStart = new Date(rangeStart + "T00:00:00");
 
   let cur = new Date(base);
   let safetyLimit = 0;
-  while (cur <= rEnd && safetyLimit < 500) {
+  while (cur <= effectiveEnd && safetyLimit < 500) {
     safetyLimit++;
     if (cur >= rStart) {
       const ds = `${cur.getFullYear()}-${String(cur.getMonth()+1).padStart(2,"0")}-${String(cur.getDate()).padStart(2,"0")}`;
@@ -682,6 +691,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
     {v:"calendario",icon:"◫",  label:"Calendario"},
     {v:"reuniones", icon:"◑",  label:"Reuniones"},
     {v:"equipo",    icon:"◎",  label:"Equipo"},
+    {v:"metricas",  icon:"◈",  label:"Métricas"},
   ];
 
   return (
@@ -1095,6 +1105,10 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
             )}
           </>
         )}
+        {view==="metricas"&&(
+          <MetricasView tasks={tasks} meetings={meetings} users={users} getAssignees={getAssignees} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} />
+        )}
+
       </div>
 
       {/* ── BOTTOM NAV MOBILE ── */}
@@ -1253,6 +1267,241 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
 }
 
 // ══════════════════════════════════════════════════════════════════════════
+// MÉTRICAS VIEW
+// ══════════════════════════════════════════════════════════════════════════
+function MetricasView({ tasks, meetings, users, getAssignees, getRoleLabel, getRoleColor }) {
+  const today = new Date();
+  const [periodo, setPeriodo] = useState("mes"); // mes | semana | todo | custom
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo,   setCustomTo]   = useState("");
+  const [rankMetric, setRankMetric] = useState("cumplimiento"); // cumplimiento | carga | reuniones | vencidas | tiempo
+
+  // ── Calcular rango de fechas ──
+  const getRange = () => {
+    if (periodo === "todo") return { from: null, to: null };
+    if (periodo === "custom") {
+      return { from: customFrom || null, to: customTo || null };
+    }
+    const to = today.toISOString().split("T")[0];
+    if (periodo === "semana") {
+      const d = new Date(today); d.setDate(d.getDate() - 7);
+      return { from: d.toISOString().split("T")[0], to };
+    }
+    if (periodo === "mes") {
+      const d = new Date(today); d.setMonth(d.getMonth() - 1);
+      return { from: d.toISOString().split("T")[0], to };
+    }
+    return { from: null, to: null };
+  };
+  const { from, to } = getRange();
+
+  const inRange = dateStr => {
+    if (!dateStr) return false;
+    if (from && dateStr < from) return false;
+    if (to   && dateStr > to)   return false;
+    return true;
+  };
+
+  // ── Filtrar tareas y reuniones por período ──
+  const periodTasks    = tasks.filter(t => periodo === "todo" ? true : inRange(t.due_date));
+  const periodMeetings = meetings.filter(m => periodo === "todo" ? true : inRange(m.date));
+
+  // ── Métricas por persona ──
+  const memberStats = users.map(u => {
+    const myTasks     = periodTasks.filter(t => getAssignees(t).includes(u.id));
+    const total       = myTasks.length;
+    const completadas = myTasks.filter(t => t.status === "completado").length;
+    const activas     = myTasks.filter(t => t.status !== "completado").length;
+    const vencidas    = myTasks.filter(t => t.status !== "completado" && t.due_date && t.due_date < today.toISOString().split("T")[0]).length;
+    const cumplimiento = total > 0 ? Math.round((completadas / total) * 100) : null;
+
+    // Tiempo promedio en completar (días entre created_at y última actualización — approx usando due_date vs created_at)
+    const completadasConFecha = myTasks.filter(t => t.status === "completado" && t.created_at && t.due_date);
+    const tiempoPromedio = completadasConFecha.length > 0
+      ? Math.round(completadasConFecha.reduce((acc, t) => {
+          const created = new Date(t.created_at);
+          const due     = new Date(t.due_date);
+          return acc + Math.max(0, (due - created) / (1000 * 60 * 60 * 24));
+        }, 0) / completadasConFecha.length)
+      : null;
+
+    const myMeetings = periodMeetings.filter(m => (m.participants || []).includes(u.id));
+
+    return { user: u, total, completadas, activas, vencidas, cumplimiento, tiempoPromedio, reuniones: myMeetings.length };
+  });
+
+  // ── Ordenar según métrica seleccionada ──
+  const sorted = [...memberStats].sort((a, b) => {
+    if (rankMetric === "cumplimiento") return (b.cumplimiento ?? -1) - (a.cumplimiento ?? -1);
+    if (rankMetric === "carga")        return b.activas     - a.activas;
+    if (rankMetric === "reuniones")    return b.reuniones   - a.reuniones;
+    if (rankMetric === "vencidas")     return b.vencidas    - a.vencidas;
+    if (rankMetric === "tiempo")       return (a.tiempoPromedio ?? 999) - (b.tiempoPromedio ?? 999);
+    return 0;
+  });
+
+  // ── Totales globales ──
+  const totalTareas     = periodTasks.length;
+  const totalCompletadas= periodTasks.filter(t=>t.status==="completado").length;
+  const totalVencidas   = periodTasks.filter(t=>t.status!=="completado"&&t.due_date&&t.due_date<today.toISOString().split("T")[0]).length;
+  const cumplimientoGlobal = totalTareas > 0 ? Math.round((totalCompletadas / totalTareas) * 100) : 0;
+
+  // ── Max values for bar scaling ──
+  const maxCarga    = Math.max(1, ...memberStats.map(m => m.activas));
+  const maxReuniones= Math.max(1, ...memberStats.map(m => m.reuniones));
+  const maxVencidas = Math.max(1, ...memberStats.map(m => m.vencidas));
+
+  const metricOpts = [
+    { key:"cumplimiento", label:"% Cumplimiento", icon:"🏆", color:"#30D158" },
+    { key:"carga",        label:"Más carga",       icon:"📋", color:"#FF9500" },
+    { key:"reuniones",    label:"Más reuniones",   icon:"👥", color:"#0A84FF" },
+    { key:"vencidas",     label:"Más vencidas",    icon:"⚠",  color:"#FF4D4D" },
+    { key:"tiempo",       label:"Más rápido",      icon:"⚡", color:"#BF5AF2" },
+  ];
+
+  const getBarValue = s => {
+    if (rankMetric==="cumplimiento") return s.cumplimiento ?? 0;
+    if (rankMetric==="carga")        return maxCarga > 0 ? Math.round((s.activas / maxCarga) * 100) : 0;
+    if (rankMetric==="reuniones")    return maxReuniones > 0 ? Math.round((s.reuniones / maxReuniones) * 100) : 0;
+    if (rankMetric==="vencidas")     return maxVencidas > 0 ? Math.round((s.vencidas / maxVencidas) * 100) : 0;
+    if (rankMetric==="tiempo")       return s.tiempoPromedio !== null ? Math.max(0, 100 - s.tiempoPromedio * 3) : 0;
+    return 0;
+  };
+
+  const getDisplayValue = s => {
+    if (rankMetric==="cumplimiento") return s.cumplimiento !== null ? `${s.cumplimiento}%` : "—";
+    if (rankMetric==="carga")        return `${s.activas} act.`;
+    if (rankMetric==="reuniones")    return `${s.reuniones}`;
+    if (rankMetric==="vencidas")     return s.vencidas > 0 ? `${s.vencidas}` : "✓";
+    if (rankMetric==="tiempo")       return s.tiempoPromedio !== null ? `${s.tiempoPromedio}d` : "—";
+    return "—";
+  };
+
+  const getValueColor = s => {
+    const m = metricOpts.find(x=>x.key===rankMetric);
+    if (rankMetric==="cumplimiento") {
+      if (s.cumplimiento === null) return "#4A5178";
+      return s.cumplimiento >= 80 ? "#30D158" : s.cumplimiento >= 50 ? "#FF9500" : "#FF4D4D";
+    }
+    if (rankMetric==="vencidas") return s.vencidas === 0 ? "#30D158" : "#FF4D4D";
+    return m?.color || "#F0F2FF";
+  };
+
+  return (
+    <div>
+      {/* Header */}
+      <div className="font-display" style={{fontSize:22,marginBottom:4,letterSpacing:"-0.5px"}}>Métricas</div>
+      <div style={{color:"#4A5178",fontSize:12,fontWeight:600,marginBottom:20}}>Rendimiento del equipo de cobros</div>
+
+      {/* Período selector */}
+      <div style={{display:"flex",gap:8,marginBottom:20,flexWrap:"wrap",alignItems:"center"}}>
+        <div className="seg-control">
+          {[["semana","Semana"],["mes","Mes"],["todo","Todo"],["custom","Rango"]].map(([k,l])=>(
+            <button key={k} className={`seg-btn ${periodo===k?"active":""}`} onClick={()=>setPeriodo(k)}>{l}</button>
+          ))}
+        </div>
+        {periodo==="custom"&&(
+          <>
+            <input type="date" className="input" style={{width:"auto",fontSize:12,padding:"7px 10px"}} value={customFrom} onChange={e=>setCustomFrom(e.target.value)} />
+            <span style={{color:"#4A5178",fontSize:12,fontWeight:600}}>→</span>
+            <input type="date" className="input" style={{width:"auto",fontSize:12,padding:"7px 10px"}} value={customTo} onChange={e=>setCustomTo(e.target.value)} />
+          </>
+        )}
+      </div>
+
+      {/* KPI global cards */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:24}}>
+        {[
+          {l:"Cumplimiento global", v:`${cumplimientoGlobal}%`, c:"#30D158", sub:`${totalCompletadas} de ${totalTareas} tareas`},
+          {l:"Tareas activas",      v:totalTareas-totalCompletadas, c:"#FF9500", sub:"en proceso o pendientes"},
+          {l:"Tareas vencidas",     v:totalVencidas, c:totalVencidas>0?"#FF4D4D":"#30D158", sub:"sin completar fuera de plazo"},
+          {l:"Reuniones",           v:periodMeetings.length, c:"#0A84FF", sub:"en el período"},
+        ].map((k,i)=>(
+          <div key={i} className="stat-card" style={{position:"relative",overflow:"hidden"}}>
+            <div style={{position:"absolute",top:-10,right:-10,width:50,height:50,background:k.c,borderRadius:"50%",opacity:.1,filter:"blur(12px)"}}/>
+            <div style={{fontSize:10,fontWeight:700,color:"#4A5178",textTransform:"uppercase",letterSpacing:".6px",marginBottom:6}}>{k.l}</div>
+            <div className="font-display" style={{fontSize:30,color:k.c,lineHeight:1,letterSpacing:"-1px"}}>{k.v}</div>
+            <div style={{fontSize:10,color:"#4A5178",fontWeight:600,marginTop:6}}>{k.sub}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Ranking metric selector */}
+      <div style={{marginBottom:16}}>
+        <div style={{fontSize:11,fontWeight:700,color:"#4A5178",textTransform:"uppercase",letterSpacing:".6px",marginBottom:8}}>Ranking por</div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          {metricOpts.map(m=>(
+            <button key={m.key} onClick={()=>setRankMetric(m.key)}
+              style={{padding:"7px 14px",borderRadius:20,border:`1.5px solid`,fontSize:12,fontWeight:700,cursor:"pointer",transition:"all .15s",
+                background:rankMetric===m.key ? m.color+"22" : "#0F1117",
+                color:rankMetric===m.key ? m.color : "#4A5178",
+                borderColor:rankMetric===m.key ? m.color+"55" : "#1E2130"}}>
+              {m.icon} {m.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Ranking list */}
+      <div style={{display:"flex",flexDirection:"column",gap:6}}>
+        {sorted.map((s, idx) => {
+          const barW   = getBarValue(s);
+          const dispV  = getDisplayValue(s);
+          const valCol = getValueColor(s);
+          const metCol = metricOpts.find(x=>x.key===rankMetric)?.color || "#F0F2FF";
+          const medals = ["🥇","🥈","🥉"];
+
+          return (
+            <div key={s.user.id} style={{background:"#0F1117",border:"1px solid #1E2130",borderRadius:12,padding:"12px 16px",transition:"border-color .15s"}}
+              onMouseEnter={e=>e.currentTarget.style.borderColor="#2A2D3E"}
+              onMouseLeave={e=>e.currentTarget.style.borderColor="#1E2130"}>
+
+              <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:10}}>
+                {/* Rank */}
+                <div style={{width:26,textAlign:"center",fontSize:idx<3?18:13,lineHeight:1}}>
+                  {idx < 3 ? medals[idx] : <span style={{fontWeight:800,color:"#4A5178"}}>#{idx+1}</span>}
+                </div>
+
+                {/* Avatar */}
+                <div className="avatar" style={{width:36,height:36,background:s.user.color+"22",color:s.user.color,fontSize:11,border:`2px solid ${s.user.color}33`,flexShrink:0}}>
+                  {s.user.avatar}
+                </div>
+
+                {/* Name + role */}
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontWeight:700,fontSize:13,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{s.user.name}</div>
+                  <span style={{fontSize:10,fontWeight:700,color:getRoleColor(s.user.role)}}>{getRoleLabel(s.user.role)}</span>
+                </div>
+
+                {/* Main value */}
+                <div style={{fontSize:20,fontWeight:800,color:valCol,letterSpacing:"-0.5px",minWidth:48,textAlign:"right"}} className="font-display">
+                  {dispV}
+                </div>
+              </div>
+
+              {/* Progress bar */}
+              <div style={{height:5,background:"#1E2130",borderRadius:3,overflow:"hidden",marginBottom:8}}>
+                <div style={{height:"100%",borderRadius:3,width:`${barW}%`,background:`linear-gradient(90deg,${metCol},${metCol}88)`,transition:"width .6s ease"}}/>
+              </div>
+
+              {/* Mini stats row */}
+              <div style={{display:"flex",gap:14,fontSize:10,fontWeight:700,color:"#4A5178",flexWrap:"wrap"}}>
+                <span style={{color:s.total===0?"#2A2D3E":"#8891B0"}}>📋 {s.total} tareas</span>
+                <span style={{color:s.completadas>0?"#30D158":"#2A2D3E"}}>✓ {s.completadas}</span>
+                <span style={{color:s.activas>0?"#FF9500":"#2A2D3E"}}>● {s.activas} activas</span>
+                {s.vencidas>0&&<span style={{color:"#FF4D4D"}}>⚠ {s.vencidas} venc.</span>}
+                <span style={{color:s.reuniones>0?"#0A84FF":"#2A2D3E"}}>👥 {s.reuniones} reun.</span>
+                {s.tiempoPromedio!==null&&<span style={{color:"#BF5AF2"}}>⚡ ~{s.tiempoPromedio}d</span>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 // CALENDAR VIEW
 // ══════════════════════════════════════════════════════════════════════════
 function CalendarView({ tasks, meetings, users, calDate, setCalDate, calView, setCalView, onItemClick }) {
@@ -1278,7 +1527,7 @@ function CalendarView({ tasks, meetings, users, calDate, setCalDate, calView, se
     // Expand recurring into day map
     const tasksByDay = {}, meetsByDay = {};
     tasks.forEach(t => {
-      const dates = expandRecurring({recurrence:t.recurrence,recurrence_days:t.recurrence_days,recurrence_end:t.recurrence_end,date:t.due_date}, rangeStart, rangeEnd);
+      const dates = expandRecurring({recurrence:t.recurrence,recurrence_days:t.recurrence_days,recurrence_end:t.recurrence_end,start_date:t.start_date,date:t.due_date}, rangeStart, rangeEnd);
       dates.forEach(ds => { if(!tasksByDay[ds]) tasksByDay[ds]=[]; tasksByDay[ds].push(t); });
     });
     meetings.forEach(m => {
@@ -1590,7 +1839,7 @@ function TaskModal({ mode, task, currentUser, users, tasks, meetings, carteras, 
 
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
             <div><label className="label">Fecha inicio</label><input type="date" className="input" value={form.start_date} onChange={e=>setForm({...form,start_date:e.target.value})} /></div>
-            <div><label className="label">Fecha límite *</label><input type="date" className="input" value={form.due_date} onChange={e=>setForm({...form,due_date:e.target.value})} /></div>
+            <div><label className="label">{form.recurrence ? "Fecha inicio recurrencia *" : "Fecha límite *"}</label><input type="date" className="input" value={form.due_date} onChange={e=>setForm({...form,due_date:e.target.value})} /></div>
           </div>
 
           {/* HORA — triggers conflict check */}
