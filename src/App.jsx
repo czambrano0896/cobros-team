@@ -533,6 +533,8 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
   const [showNewMeeting, setShowNewMeeting]= useState(false);
   const [editingMeeting, setEditingMeeting]= useState(null);
   const [editingTask,    setEditingTask]   = useState(null);
+  const [splitTasks,     setSplitTasks]   = useState(null); // {baseForm, perPerson:[{userId, form}]}
+  const [showProfile,    setShowProfile]  = useState(false);
   const [expandedTask,   setExpandedTask]  = useState(null);
   const [showVisibility, setShowVisibility]= useState(null);
   const [showHistory,    setShowHistory]   = useState(null);
@@ -545,7 +547,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
   const [selectedMember, setSelectedMember]= useState(null); // for team click-through
   const [calSelectedItem,setCalSelectedItem]=useState(null); // for calendar click detail
   const [showSettings,   setShowSettings]  = useState(false);// carteras/roles settings
-  const isAdmin   = roles.find(r => r.key === currentUser.role)?.admin === true;
+  const isAdmin   = roles.find(r => r.key === currentUser.role)?.admin === true || currentUser.is_admin === true;
   const isGerente = isAdmin; // alias — used throughout for backward compat
 
   const showToast = (msg, type="success") => { setToast({msg,type}); setTimeout(()=>setToast(null),3000); };
@@ -640,7 +642,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
   function isTaskVisible(task) {
     const creator = getUser(task.assigned_by);
     const assignees = getAssignees(task);
-    const creatorIsAdmin = roles.find(r => r.key === creator?.role)?.admin === true;
+    const creatorIsAdmin = roles.find(r => r.key === creator?.role)?.admin === true || creator?.is_admin === true;
     if (creatorIsAdmin && !task.is_published && task.assigned_by!==currentUser.id && !assignees.includes(currentUser.id)) return false;
     if (task.visible_to?.length>0 && !task.visible_to.includes(currentUser.id)) return false;
     return true;
@@ -811,12 +813,13 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
             </div>
             {/* User */}
             <div style={{display:"flex",alignItems:"center",gap:8,background:"#0F1117",border:"1px solid #1E2130",borderRadius:10,padding:"6px 12px"}}>
-              <div className="avatar" style={{width:26,height:26,background:currentUser.color+"22",color:currentUser.color,fontSize:9}}>{currentUser.avatar}</div>
+              <div className="avatar" style={{width:26,height:26,background:currentUser.color+"22",color:currentUser.color,fontSize:9,cursor:"pointer"}} onClick={()=>setShowProfile(true)} title="Mi perfil">{currentUser.avatar}</div>
               <div>
                 <div style={{fontSize:12,fontWeight:700,lineHeight:1.2}}>{currentUser.name.split(" ")[0]}</div>
                 <div style={{fontSize:9,color:getRoleColor(currentUser.role),fontWeight:700}}>{getRoleLabel(currentUser.role)}</div>
               </div>
-              <button onClick={onLogout} className="btn-icon" style={{marginLeft:2,fontSize:12}} title="Salir">⏏</button>
+              <button onClick={()=>setShowProfile(true)} className="btn-icon" style={{marginLeft:2,fontSize:11}} title="Mi perfil">👤</button>
+              <button onClick={onLogout} className="btn-icon" style={{fontSize:12}} title="Salir">⏏</button>
             </div>
           </div>
         </div>
@@ -846,7 +849,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
               </div>
             )}
           </div>
-          <div className="avatar" style={{width:28,height:28,background:currentUser.color+"22",color:currentUser.color,fontSize:9,cursor:"pointer"}} onClick={onLogout} title="Salir">{currentUser.avatar}</div>
+          <div className="avatar" style={{width:28,height:28,background:currentUser.color+"22",color:currentUser.color,fontSize:9,cursor:"pointer"}} onClick={()=>setShowProfile(true)} title="Mi perfil">{currentUser.avatar}</div>
         </div>
       </div>
 
@@ -923,7 +926,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
               const taskComments= comments.filter(c=>c.task_id===task.id);
               const taskHistory = history.filter(h=>h.task_id===task.id);
               const isExpanded  = expandedTask===task.id;
-              const isGerenteTask = roles.find(r => r.key === getUser(task.assigned_by)?.role)?.admin === true;
+              const isGerenteTask = roles.find(r => r.key === getUser(task.assigned_by)?.role)?.admin === true || getUser(task.assigned_by)?.is_admin === true;
 
               return (
                 <div key={task.id} className="task-row" style={{borderLeft:`3px solid ${isOver?"#FF4D4D":task.status==="completado"?"#30D15844":"transparent"}`}}>
@@ -1209,6 +1212,12 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
         <TaskModal mode="create" roles={roles} currentUser={currentUser} users={users} tasks={tasks} meetings={meetings} carteras={carteras} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} onClose={()=>setShowNewTask(false)}
           onSave={async form=>{
             const assignees = Array.isArray(form.assignedTo)?form.assignedTo:[form.assignedTo];
+            if (assignees.length > 1) {
+              // Show split decision modal
+              setShowNewTask(false);
+              setSplitTasks({ baseForm: form, assignees });
+              return;
+            }
             const data={title:form.title,description:form.description,assigned_to:assignees,assigned_by:currentUser.id,priority:form.priority,status:"pendiente",due_date:form.due_date,start_date:form.start_date||null,task_time:form.task_time||null,cartera:form.cartera,is_published:!isAdmin?true:(form.is_published??true),recurrence:form.recurrence||null,recurrence_days:form.recurrence_days||null,recurrence_end:form.recurrence_end||null,notify_before:form.notify_before||null};
             const res=await db.insert("tasks",data);
             if(Array.isArray(res)&&res[0]){ setTasks(p=>[normalizeTask(res[0]),...p]); await logHistory(res[0].id,"created","",form.title); }
@@ -1258,6 +1267,51 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
             await db.update("meetings",editingMeeting.id,clean);
             setMeetings(p=>p.map(m=>m.id===editingMeeting.id?normalizeMeeting({...m,...clean}):m));
             setEditingMeeting(null); showToast("Reunión actualizada ✓"); refreshMeetings();
+          }}
+        />
+      )}
+
+      {splitTasks&&(
+        <SplitTasksModal
+          baseForm={splitTasks.baseForm}
+          assignees={splitTasks.assignees}
+          users={users}
+          carteras={carteras}
+          getRoleLabel={getRoleLabel}
+          getRoleColor={getRoleColor}
+          onClose={()=>setSplitTasks(null)}
+          onSave={async (mode, perPersonForms) => {
+            if (mode === "shared") {
+              // One task for all
+              const f = perPersonForms[0];
+              const data={title:f.title,description:f.description,assigned_to:splitTasks.assignees,assigned_by:currentUser.id,priority:f.priority,status:"pendiente",due_date:f.due_date,start_date:f.start_date||null,task_time:f.task_time||null,cartera:f.cartera,is_published:!isAdmin?true:true,recurrence:f.recurrence||null,recurrence_days:f.recurrence_days||null,recurrence_end:f.recurrence_end||null,notify_before:f.notify_before||null};
+              const res=await db.insert("tasks",data);
+              if(Array.isArray(res)&&res[0]){ setTasks(p=>[normalizeTask(res[0]),...p]); await logHistory(res[0].id,"created","",f.title); }
+            } else {
+              // Individual task per person
+              for (const f of perPersonForms) {
+                const data={title:f.title,description:f.description,assigned_to:[f.userId],assigned_by:currentUser.id,priority:f.priority,status:"pendiente",due_date:f.due_date,start_date:f.start_date||null,task_time:f.task_time||null,cartera:f.cartera,is_published:!isAdmin?true:true,recurrence:null,recurrence_days:null,recurrence_end:null,notify_before:f.notify_before||null};
+                const res=await db.insert("tasks",data);
+                if(Array.isArray(res)&&res[0]){ await logHistory(res[0].id,"created","",f.title); }
+              }
+              await refreshTasks();
+            }
+            setSplitTasks(null);
+            showToast(`${perPersonForms.length} tarea${perPersonForms.length>1?"s":""} creada${perPersonForms.length>1?"s":""} ✓`);
+            refreshTasks();
+          }}
+        />
+      )}
+
+      {showProfile&&(
+        <ProfileModal
+          user={currentUser}
+          onClose={()=>setShowProfile(false)}
+          onSave={async (data) => {
+            await db.update("users", currentUser.id, data);
+            await refreshUsers();
+            setShowProfile(false);
+            showToast("Perfil actualizado ✓");
           }}
         />
       )}
@@ -1906,7 +1960,7 @@ function TaskModal({ mode, task, currentUser, roles, users, tasks, meetings, car
   const [form,      setForm]      = useState(init);
   const [conflicts, setConflicts] = useState([]);
   const [showConflictDetail, setShowConflictDetail] = useState(false);
-  const isGerente = roles?.find(r => r.key === currentUser.role)?.admin === true;
+  const isGerente = roles?.find(r => r.key === currentUser.role)?.admin === true || currentUser.is_admin === true;
 
   // Live conflict detection whenever date/time/assignees change
   useEffect(() => {
@@ -2154,9 +2208,11 @@ function ManageUsers({ users, onRefresh, showToast, roles, saveRoles, carteras, 
   const [editCartera,setEditCartera]= useState(null); // {idx, val}
   const [newRole,  setNewRole]  = useState({key:"",label:"",color:"#8891B0",admin:false});
   const [editRole, setEditRole] = useState(null); // idx
+  const [emojiPicker, setEmojiPicker] = useState(null); // user id being edited
   const COLORS = ["#FF4D4D","#FF9500","#30D158","#0A84FF","#BF5AF2","#FF6B6B","#4ECDC4","#FFE66D","#8891B0"];
+  const AVATARS = ["👤","😊","😎","🤓","💪","🦊","🐺","🦁","🐯","🦅","🌟","⚡","🎯","🔥","💎","🚀","🏆","💼","📊","🎪"];
 
-  const startEdit = u => { setEditing(u.id); setForm({name:u.name,username:u.username,email:u.email||"",password:u.password,role:u.role,color:u.color,avatar:u.avatar}); };
+  const startEdit = u => { setEditing(u.id); setEmojiPicker(null); setForm({name:u.name,username:u.username,email:u.email||"",password:u.password,role:u.role,color:u.color,avatar:u.avatar,is_admin:!!u.is_admin}); };
   const saveUser  = async () => { await db.update("users",editing,form); await onRefresh(); setEditing(null); showToast("Usuario actualizado ✓"); };
   const deleteUser= async id => { if(!window.confirm("¿Eliminar este usuario?")) return; await db.delete("users",id); await onRefresh(); showToast("Usuario eliminado"); };
   const addUser   = async () => {
@@ -2182,13 +2238,28 @@ function ManageUsers({ users, onRefresh, showToast, roles, saveRoles, carteras, 
         <>
           <div style={{overflowX:"auto",marginBottom:10}}>
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-              <thead><tr style={{borderBottom:"1px solid #1E2130"}}>{["Nombre","Usuario","Correo","Contraseña","Rol",""].map(h=><th key={h} style={{textAlign:"left",padding:"5px 10px",color:"#4A5178",fontWeight:700,fontSize:10,textTransform:"uppercase"}}>{h}</th>)}</tr></thead>
+              <thead><tr style={{borderBottom:"1px solid #1E2130"}}>{["Nombre","Usuario","Correo","Contraseña","Rol","Admin",""].map(h=><th key={h} style={{textAlign:"left",padding:"5px 10px",color:"#4A5178",fontWeight:700,fontSize:10,textTransform:"uppercase"}}>{h}</th>)}</tr></thead>
               <tbody>
                 {users.map(u=>(
                   <tr key={u.id} style={{borderBottom:"1px solid #1E213044"}}>
                     {editing===u.id?(
                       <>
-                        <td style={{padding:"5px 6px"}}><input className="input" style={{padding:"5px 9px",fontSize:11}} value={form.name} onChange={e=>setForm({...form,name:e.target.value})} /></td>
+                        <td style={{padding:"5px 6px"}}>
+                          <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                            <div style={{position:"relative"}}>
+                              <div className="avatar" style={{width:26,height:26,background:form.color+"22",color:form.color,fontSize:10,cursor:"pointer",border:`1px solid ${form.color}44`}} onClick={()=>setEmojiPicker(editing)}>
+                                {form.avatar}
+                              </div>
+                              {emojiPicker===editing&&(
+                                <div style={{position:"absolute",top:30,left:0,zIndex:200,background:"#0F1117",border:"1px solid #1E2130",borderRadius:10,padding:8,display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:4,boxShadow:"0 8px 24px rgba(0,0,0,.8)"}}>
+                                  {AVATARS.map(e=><button key={e} onClick={()=>{setForm({...form,avatar:e});setEmojiPicker(null);}} style={{background:"none",border:"none",fontSize:16,cursor:"pointer",padding:2,borderRadius:4}}>{e}</button>)}
+                                  <input placeholder="✏" style={{gridColumn:"1/-1",background:"#1E2130",border:"none",borderRadius:4,padding:"3px 6px",color:"#F0F2FF",fontSize:12,fontFamily:"'Outfit',sans-serif",outline:"none"}} maxLength={2} value={form.avatar} onChange={e=>setForm({...form,avatar:e.target.value})} />
+                                </div>
+                              )}
+                            </div>
+                            <input className="input" style={{padding:"5px 9px",fontSize:11}} value={form.name} onChange={e=>setForm({...form,name:e.target.value})} />
+                          </div>
+                        </td>
                         <td style={{padding:"5px 6px"}}><input className="input" style={{padding:"5px 9px",fontSize:11}} value={form.username} onChange={e=>setForm({...form,username:e.target.value})} /></td>
                         <td style={{padding:"5px 6px"}}><input className="input" style={{padding:"5px 9px",fontSize:11}} value={form.email||""} placeholder="correo@empresa.com" onChange={e=>setForm({...form,email:e.target.value})} /></td>
                         <td style={{padding:"5px 6px"}}><input className="input" style={{padding:"5px 9px",fontSize:11}} value={form.password} onChange={e=>setForm({...form,password:e.target.value})} /></td>
@@ -2197,7 +2268,10 @@ function ManageUsers({ users, onRefresh, showToast, roles, saveRoles, carteras, 
                             {roles.map(r=><option key={r.key} value={r.key}>{r.label}</option>)}
                           </select>
                         </td>
-                        <td style={{padding:"5px 6px"}}><div style={{display:"flex",gap:4}}><button className="btn btn-red" style={{padding:"4px 10px",fontSize:11}} onClick={saveUser}>✓</button><button className="btn btn-glass" style={{padding:"4px 8px",fontSize:11}} onClick={()=>setEditing(null)}>✕</button></div></td>
+                        <td style={{padding:"5px 6px",textAlign:"center"}}>
+                          <input type="checkbox" checked={!!form.is_admin} onChange={e=>setForm({...form,is_admin:e.target.checked})} style={{accentColor:"#FF4D4D",width:15,height:15,cursor:"pointer"}} title="Admin personal"/>
+                        </td>
+                        <td style={{padding:"5px 6px"}}><div style={{display:"flex",gap:4}}><button className="btn btn-red" style={{padding:"4px 10px",fontSize:11}} onClick={saveUser}>✓</button><button className="btn btn-glass" style={{padding:"4px 8px",fontSize:11}} onClick={()=>{setEditing(null);setEmojiPicker(null);}}>✕</button></div></td>
                       </>
                     ):(
                       <>
@@ -2206,6 +2280,7 @@ function ManageUsers({ users, onRefresh, showToast, roles, saveRoles, carteras, 
                         <td style={{padding:"8px 10px",color:"#8891B0",fontSize:11}}>{u.email||<span style={{color:"#4A5178"}}>sin correo</span>}</td>
                         <td style={{padding:"8px 10px",fontFamily:"monospace",color:"#8891B0",fontSize:11}}>{u.password}</td>
                         <td style={{padding:"8px 10px"}}><span className="badge" style={{color:getRoleColor(u.role),background:getRoleColor(u.role)+"15",fontSize:10}}>{getRoleLabel(u.role)}</span></td>
+                        <td style={{padding:"8px 10px",textAlign:"center"}}>{u.is_admin&&<span style={{fontSize:9,fontWeight:800,color:"#FF4D4D",background:"rgba(255,77,77,.12)",border:"1px solid rgba(255,77,77,.3)",borderRadius:4,padding:"1px 5px"}}>ADMIN</span>}</td>
                         <td style={{padding:"8px 10px"}}><div style={{display:"flex",gap:4}}>
                           <button className="btn-icon" style={{fontSize:11}} onClick={()=>startEdit(u)}>✏</button>
                           <button className="btn-danger-icon" style={{fontSize:10}} onClick={()=>deleteUser(u.id)}>🗑</button>
@@ -2327,7 +2402,7 @@ function ManageUsers({ users, onRefresh, showToast, roles, saveRoles, carteras, 
 // NEW MEETING MODAL — with conflict detection
 // ══════════════════════════════════════════════════════════════════════════
 function NewMeetingModal({ currentUser, roles, users, tasks, meetings, editingMeeting, getRoleLabel, getRoleColor, onClose, onSave }) {
-  const isGerente = roles?.find(r => r.key === currentUser.role)?.admin === true;
+  const isGerente = roles?.find(r => r.key === currentUser.role)?.admin === true || currentUser.is_admin === true;
   const init = editingMeeting ? {
     title:editingMeeting.title||"", date:editingMeeting.date||"", time:editingMeeting.time||"",
     type:editingMeeting.type||"seguimiento", notes:editingMeeting.notes||"",
@@ -2468,6 +2543,191 @@ function NewMeetingModal({ currentUser, roles, users, tasks, meetings, editingMe
                 : "Agendar ✓"}
             </button>
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// SPLIT TASKS MODAL — decide shared vs individual, customize per person
+// ══════════════════════════════════════════════════════════════════════════
+function SplitTasksModal({ baseForm, assignees, users, carteras, getRoleLabel, getRoleColor, onClose, onSave }) {
+  const [mode, setMode] = useState(null); // null | "shared" | "individual"
+  const [perPerson, setPerPerson] = useState(() =>
+    assignees.map(uid => ({
+      userId: uid,
+      title: baseForm.title,
+      description: baseForm.description || "",
+      priority: baseForm.priority,
+      due_date: baseForm.due_date,
+      start_date: baseForm.start_date || "",
+      task_time: baseForm.task_time || "",
+      cartera: baseForm.cartera,
+      notify_before: baseForm.notify_before || "",
+    }))
+  );
+  const [editing, setEditing] = useState(0);
+  const getUser = id => users.find(u => u.id === id);
+  const PRIORITIES = [{value:"critica",label:"Crítica",color:"#FF4D4D"},{value:"alta",label:"Alta",color:"#FF9500"},{value:"media",label:"Media",color:"#0A84FF"},{value:"baja",label:"Baja",color:"#30D158"}];
+  const update = (idx, field, val) => setPerPerson(p => p.map((x,i) => i===idx ? {...x,[field]:val} : x));
+
+  if (!mode) return (
+    <div className="modal-overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="modal" style={{maxWidth:400}}>
+        <div className="font-display" style={{fontSize:17,marginBottom:6}}>Asignación múltiple</div>
+        <div style={{color:"#4A5178",fontSize:12,fontWeight:600,marginBottom:20}}>
+          {assignees.length} personas seleccionadas — ¿cómo quieres crear la tarea?
+        </div>
+        <div style={{display:"flex",gap:10,marginBottom:16}}>
+          {assignees.map(uid => { const u=getUser(uid); return u ? (
+            <div key={uid} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+              <div className="avatar" style={{width:34,height:34,background:u.color+"22",color:u.color,fontSize:13,border:`1px solid ${u.color}44`}}>{u.avatar}</div>
+              <span style={{fontSize:10,fontWeight:700,color:"#8891B0"}}>{u.name.split(" ")[0]}</span>
+            </div>
+          ) : null; })}
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          <button className="btn btn-glass" style={{justifyContent:"flex-start",padding:"14px 16px",flexDirection:"column",alignItems:"flex-start",gap:4,height:"auto"}} onClick={()=>setMode("shared")}>
+            <span style={{fontWeight:800,fontSize:13}}>👥 Tarea compartida</span>
+            <span style={{fontSize:11,color:"#4A5178",fontWeight:600}}>Una sola tarea visible para todos</span>
+          </button>
+          <button className="btn btn-glass" style={{justifyContent:"flex-start",padding:"14px 16px",flexDirection:"column",alignItems:"flex-start",gap:4,height:"auto"}} onClick={()=>setMode("individual")}>
+            <span style={{fontWeight:800,fontSize:13}}>👤 Tarea individual por persona</span>
+            <span style={{fontSize:11,color:"#4A5178",fontWeight:600}}>Una tarea separada por cada persona, puedes personalizar cada una</span>
+          </button>
+        </div>
+        <div style={{display:"flex",gap:8,marginTop:14}}>
+          <button className="btn btn-glass" style={{flex:1,justifyContent:"center"}} onClick={onClose}>Cancelar</button>
+        </div>
+      </div>
+    </div>
+  );
+
+  if (mode === "shared") {
+    onSave("shared", [perPerson[0]]);
+    return null;
+  }
+
+  // Individual mode — show per-person editor
+  const cur = perPerson[editing];
+  const curUser = getUser(cur.userId);
+  return (
+    <div className="modal-overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="modal" style={{maxWidth:520}}>
+        <div className="font-display" style={{fontSize:16,marginBottom:4}}>Personalizar tareas individuales</div>
+        <div style={{color:"#4A5178",fontSize:11,fontWeight:600,marginBottom:14}}>Edita cada tarea antes de crear. Los cambios son independientes.</div>
+
+        {/* Person tabs */}
+        <div style={{display:"flex",gap:6,marginBottom:16,overflowX:"auto",paddingBottom:4}}>
+          {perPerson.map((p,i) => { const u=getUser(p.userId); return (
+            <button key={i} onClick={()=>setEditing(i)}
+              style={{display:"flex",alignItems:"center",gap:6,padding:"6px 12px",borderRadius:8,border:`1px solid ${editing===i?(u?.color||"#FF4D4D")+"66":"#1E2130"}`,background:editing===i?(u?.color||"#FF4D4D")+"12":"transparent",cursor:"pointer",whiteSpace:"nowrap",flexShrink:0}}>
+              <div className="avatar" style={{width:20,height:20,background:(u?.color||"#8891B0")+"22",color:u?.color||"#8891B0",fontSize:8}}>{u?.avatar||"?"}</div>
+              <span style={{fontSize:11,fontWeight:700,color:editing===i?"#F0F2FF":"#8891B0"}}>{u?.name.split(" ")[0]||"?"}</span>
+            </button>
+          ); })}
+        </div>
+
+        {/* Form for current person */}
+        {curUser&&<div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,background:"#0A0B10",borderRadius:8,padding:"8px 12px"}}>
+          <div className="avatar" style={{width:28,height:28,background:curUser.color+"22",color:curUser.color,fontSize:10}}>{curUser.avatar}</div>
+          <span style={{fontWeight:700,fontSize:13}}>{curUser.name}</span>
+          <span className="badge" style={{color:getRoleColor(curUser.role),background:getRoleColor(curUser.role)+"15",fontSize:10}}>{getRoleLabel(curUser.role)}</span>
+        </div>}
+
+        <div style={{display:"flex",flexDirection:"column",gap:10}}>
+          <div><label className="label">Título *</label>
+            <input className="input" value={cur.title} onChange={e=>update(editing,"title",e.target.value)} placeholder="Título de la tarea"/>
+          </div>
+          <div><label className="label">Descripción</label>
+            <textarea className="input" rows={2} value={cur.description} onChange={e=>update(editing,"description",e.target.value)} style={{resize:"vertical"}}/>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            <div><label className="label">Prioridad</label>
+              <select className="input" value={cur.priority} onChange={e=>update(editing,"priority",e.target.value)}>
+                {PRIORITIES.map(p=><option key={p.value} value={p.value}>{p.label}</option>)}
+              </select>
+            </div>
+            <div><label className="label">Cartera</label>
+              <select className="input" value={cur.cartera} onChange={e=>update(editing,"cartera",e.target.value)}>
+                {carteras.map(c=><option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <div><label className="label">Fecha límite *</label>
+              <input type="date" className="input" value={cur.due_date} onChange={e=>update(editing,"due_date",e.target.value)}/>
+            </div>
+            <div><label className="label">Hora</label>
+              <input type="time" className="input" value={cur.task_time} onChange={e=>update(editing,"task_time",e.target.value)}/>
+            </div>
+          </div>
+        </div>
+
+        <div style={{display:"flex",gap:8,marginTop:16}}>
+          <button className="btn btn-glass" style={{flex:1,justifyContent:"center"}} onClick={onClose}>Cancelar</button>
+          {editing < perPerson.length-1
+            ? <button className="btn btn-glass" style={{flex:1,justifyContent:"center"}} onClick={()=>setEditing(editing+1)}>Siguiente →</button>
+            : <button className="btn btn-red" style={{flex:2,justifyContent:"center"}}
+                onClick={()=>{
+                  if(perPerson.some(p=>!p.title.trim()||!p.due_date)){alert("Completa título y fecha en todas las tareas");return;}
+                  onSave("individual",perPerson);
+                }}>Crear {perPerson.length} tareas ✓</button>
+          }
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// PROFILE MODAL — user edits own avatar, color, password
+// ══════════════════════════════════════════════════════════════════════════
+function ProfileModal({ user, onClose, onSave }) {
+  const [form, setForm] = useState({avatar: user.avatar, color: user.color, password: user.password||"", name: user.name});
+  const [showEmoji, setShowEmoji] = useState(false);
+  const COLORS = ["#FF4D4D","#FF9500","#30D158","#0A84FF","#BF5AF2","#FF6B6B","#4ECDC4","#FFE66D","#8891B0","#FF3B30","#34C759","#007AFF","#5856D6","#FF2D55"];
+  const AVATARS = ["👤","😊","😎","🤓","💪","🦊","🐺","🦁","🐯","🦅","🌟","⚡","🎯","🔥","💎","🚀","🏆","💼","📊","🎪","🧑‍💼","👩‍💼","🧑‍🔬","🧑‍🎨","🧑‍💻"];
+  return (
+    <div className="modal-overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="modal" style={{maxWidth:360}}>
+        <div className="font-display" style={{fontSize:17,marginBottom:20}}>Mi perfil</div>
+
+        {/* Avatar preview + picker */}
+        <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:12,marginBottom:20}}>
+          <div style={{position:"relative"}}>
+            <div className="avatar" style={{width:64,height:64,background:form.color+"22",color:form.color,fontSize:24,border:`2px solid ${form.color}44`,cursor:"pointer"}} onClick={()=>setShowEmoji(!showEmoji)}>
+              {form.avatar}
+            </div>
+            <div style={{position:"absolute",bottom:-4,right:-4,background:"#1E2130",border:"1px solid #2A2D3A",borderRadius:"50%",width:20,height:20,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,cursor:"pointer"}} onClick={()=>setShowEmoji(!showEmoji)}>✏</div>
+          </div>
+          {showEmoji&&(
+            <div style={{background:"#0F1117",border:"1px solid #1E2130",borderRadius:12,padding:10,display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:6,boxShadow:"0 8px 24px rgba(0,0,0,.8)"}}>
+              {AVATARS.map(e=><button key={e} onClick={()=>{setForm({...form,avatar:e});setShowEmoji(false);}} style={{background:form.avatar===e?"rgba(255,77,77,.15)":"none",border:form.avatar===e?"1px solid rgba(255,77,77,.4)":"1px solid transparent",fontSize:20,cursor:"pointer",padding:4,borderRadius:6}}>{e}</button>)}
+              <div style={{gridColumn:"1/-1",display:"flex",gap:6,alignItems:"center",marginTop:4}}>
+                <label style={{fontSize:10,color:"#4A5178",fontWeight:700,whiteSpace:"nowrap"}}>Personalizado:</label>
+                <input style={{background:"#1E2130",border:"1px solid #2A2D3A",borderRadius:4,padding:"3px 6px",color:"#F0F2FF",fontSize:14,fontFamily:"'Outfit',sans-serif",outline:"none",width:48,textAlign:"center"}} maxLength={2} value={form.avatar} onChange={e=>setForm({...form,avatar:e.target.value})} />
+              </div>
+            </div>
+          )}
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",justifyContent:"center"}}>
+            {COLORS.map(c=><button key={c} onClick={()=>setForm({...form,color:c})} style={{width:22,height:22,borderRadius:"50%",background:c,border:form.color===c?"2px solid #fff":"2px solid transparent",cursor:"pointer"}}/>)}
+          </div>
+        </div>
+
+        <div style={{display:"flex",flexDirection:"column",gap:10}}>
+          <div>
+            <label className="label">Nombre</label>
+            <input className="input" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/>
+          </div>
+          <div>
+            <label className="label">Contraseña</label>
+            <input className="input" type="text" value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/>
+          </div>
+        </div>
+
+        <div style={{display:"flex",gap:8,marginTop:16}}>
+          <button className="btn btn-glass" style={{flex:1,justifyContent:"center"}} onClick={onClose}>Cancelar</button>
+          <button className="btn btn-red" style={{flex:2,justifyContent:"center"}} onClick={()=>onSave(form)}>Guardar ✓</button>
         </div>
       </div>
     </div>
