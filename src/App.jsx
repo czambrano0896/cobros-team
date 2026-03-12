@@ -45,15 +45,18 @@ const PRIORITIES = [
 const PRIO_ORDER  = { urgente:0, alta:1, media:2, baja:3 };
 const STATUS_NEXT = { "pendiente":"en-proceso", "en-proceso":"completado" };
 const STATUS_PREV = { "en-proceso":"pendiente", "completado":"en-proceso" };
-const CARTERAS    = ["Cartera Vencida","Cartera Corriente","Cartera Judicial","Cartera Empresarial","Cartera Pequeñas Cuentas"];
+const DEFAULT_CARTERAS = ["Cartera Vencida","Cartera Corriente","Cartera Judicial","Cartera Empresarial","Cartera Pequeñas Cuentas"];
+const DEFAULT_ROLES    = [
+  { key:"gerente",    label:"Gerente",    color:"#FF4D4D" },
+  { key:"supervisor", label:"Supervisor", color:"#FF9500" },
+  { key:"analista",   label:"Analista",   color:"#0A84FF" },
+];
 const MEET_TYPES  = {
   seguimiento:  { label:"Seguimiento",  color:"#0A84FF", icon:"📋" },
   estrategia:   { label:"Estrategia",   color:"#BF5AF2", icon:"🎯" },
   capacitacion: { label:"Capacitación", color:"#30D158", icon:"📚" },
   otro:         { label:"Otro",         color:"#FF9500", icon:"💬" },
 };
-const ROLE_LABEL = { gerente:"Gerente", supervisor:"Supervisor", analista:"Analista" };
-const ROLE_COLOR = { gerente:"#FF4D4D", supervisor:"#FF9500", analista:"#0A84FF" };
 const WEEKDAYS   = ["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"];
 const MONTHS     = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 
@@ -277,6 +280,17 @@ export default function App() {
   const [user,    setUser]    = useState(null);
   const [users,   setUsers]   = useState([]);
   const [loading, setLoading] = useState(true);
+  const [carteras, setCarteras] = useState(() => {
+    try { const s = localStorage.getItem("ct_carteras"); return s ? JSON.parse(s) : DEFAULT_CARTERAS; } catch { return DEFAULT_CARTERAS; }
+  });
+  const [roles, setRoles] = useState(() => {
+    try { const s = localStorage.getItem("ct_roles"); return s ? JSON.parse(s) : DEFAULT_ROLES; } catch { return DEFAULT_ROLES; }
+  });
+
+  const saveCarteras = list => { setCarteras(list); localStorage.setItem("ct_carteras", JSON.stringify(list)); };
+  const saveRoles    = list => { setRoles(list);    localStorage.setItem("ct_roles",    JSON.stringify(list)); };
+  const getRoleLabel = key => roles.find(r=>r.key===key)?.label || key;
+  const getRoleColor = key => roles.find(r=>r.key===key)?.color || "#8891B0";
 
   useEffect(() => {
     db.get("users","select=*").then(d => { setUsers(Array.isArray(d)?d:[]); setLoading(false); });
@@ -294,14 +308,18 @@ export default function App() {
     </div>
   );
 
-  if (!user) return <LoginScreen users={users} onLogin={setUser} />;
-  return <Dashboard currentUser={user} users={users} refreshUsers={refreshUsers} onLogout={() => setUser(null)} />;
+  if (!user) return <LoginScreen users={users} onLogin={setUser} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} />;
+  return <Dashboard currentUser={user} users={users} refreshUsers={refreshUsers} onLogout={()=>setUser(null)}
+    carteras={carteras} saveCarteras={saveCarteras}
+    roles={roles} saveRoles={saveRoles}
+    getRoleLabel={getRoleLabel} getRoleColor={getRoleColor}
+  />;
 }
 
 // ══════════════════════════════════════════════════════════════════════════
 // LOGIN
 // ══════════════════════════════════════════════════════════════════════════
-function LoginScreen({ users, onLogin }) {
+function LoginScreen({ users, onLogin, getRoleLabel, getRoleColor }) {
   const [email,    setEmail]    = useState("");
   const [password, setPassword] = useState("");
   const [error,    setError]    = useState("");
@@ -354,7 +372,7 @@ function LoginScreen({ users, onLogin }) {
               <div className="avatar" style={{width:22,height:22,background:u.color+"22",color:u.color,fontSize:8}}>{u.avatar}</div>
               <span style={{color:"#F0F2FF",fontWeight:600,fontSize:12,flex:1}}>{u.name.split(" ")[0]}</span>
               <span style={{color:"#0A84FF",fontFamily:"monospace",fontSize:11}}>{u.email||u.username}</span>
-              <span style={{color:ROLE_COLOR[u.role],fontSize:10,fontWeight:700}}>{ROLE_LABEL[u.role]}</span>
+              <span style={{color:getRoleColor(u.role),fontSize:10,fontWeight:700}}>{getRoleLabel(u.role)}</span>
             </div>
           ))}
         </div>
@@ -366,7 +384,7 @@ function LoginScreen({ users, onLogin }) {
 // ══════════════════════════════════════════════════════════════════════════
 // DASHBOARD
 // ══════════════════════════════════════════════════════════════════════════
-function Dashboard({ currentUser, users, refreshUsers, onLogout }) {
+function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveCarteras, roles, saveRoles, getRoleLabel, getRoleColor }) {
   const [view,           setView]          = useState("tablero");
   const [tasks,          setTasks]         = useState([]);
   const [meetings,       setMeetings]      = useState([]);
@@ -389,6 +407,9 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout }) {
   const [calDate,        setCalDate]       = useState(new Date());
   const [calView,        setCalView]       = useState("mes");
   const [toast,          setToast]         = useState(null);
+  const [selectedMember, setSelectedMember]= useState(null); // for team click-through
+  const [calSelectedItem,setCalSelectedItem]=useState(null); // for calendar click detail
+  const [showSettings,   setShowSettings]  = useState(false);// carteras/roles settings
   const isGerente = currentUser.role === "gerente";
 
   const showToast = (msg, type="success") => { setToast({msg,type}); setTimeout(()=>setToast(null),3000); };
@@ -585,7 +606,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout }) {
               <div className="avatar" style={{width:26,height:26,background:currentUser.color+"22",color:currentUser.color,fontSize:9}}>{currentUser.avatar}</div>
               <div>
                 <div style={{fontSize:12,fontWeight:700,lineHeight:1.2}}>{currentUser.name.split(" ")[0]}</div>
-                <div style={{fontSize:9,color:ROLE_COLOR[currentUser.role],fontWeight:700}}>{ROLE_LABEL[currentUser.role]}</div>
+                <div style={{fontSize:9,color:getRoleColor(currentUser.role),fontWeight:700}}>{getRoleLabel(currentUser.role)}</div>
               </div>
               <button onClick={onLogout} className="btn-icon" style={{marginLeft:2,fontSize:12}} title="Salir">⏏</button>
             </div>
@@ -657,7 +678,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout }) {
               </div>
               <select className="input" style={{width:"auto",fontSize:12,padding:"7px 12px"}} value={filterCartera} onChange={e=>setFilterCartera(e.target.value)}>
                 <option value="all">Cartera</option>
-                {CARTERAS.map(c=><option key={c} value={c}>{c}</option>)}
+                {carteras.map(c=><option key={c} value={c}>{c}</option>)}
               </select>
               <select className="input" style={{width:"auto",fontSize:12,padding:"7px 12px"}} value={filterPriority} onChange={e=>setFilterPriority(e.target.value)}>
                 <option value="all">Prioridad</option>
@@ -796,6 +817,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout }) {
             tasks={visibleTasks} meetings={meetings} users={users}
             isTaskVisible={isTaskVisible} calDate={calDate} setCalDate={setCalDate}
             calView={calView} setCalView={setCalView}
+            onItemClick={item=>setCalSelectedItem(item)}
           />
         )}
 
@@ -855,41 +877,94 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout }) {
         {/* ══ EQUIPO ══ */}
         {view==="equipo"&&(
           <>
-            <div className="font-display" style={{fontSize:18,color:"#F0F2FF",letterSpacing:"-0.3px",marginBottom:4}}>Equipo</div>
-            <div style={{color:"#4A5178",fontSize:12,marginBottom:18,fontWeight:600}}>Carga y progreso</div>
-            {isGerente&&<ManageUsers users={users} onRefresh={refreshUsers} showToast={showToast} />}
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(250px,1fr))",gap:10,marginTop:16}}>
-              {users.filter(u=>u.role!=="gerente").map(member=>{
-                const mt   = tasks.filter(t=>t.assigned_to===member.id);
-                const done = mt.filter(t=>t.status==="completado").length;
-                const ov   = mt.filter(t=>t.status!=="completado"&&daysLeft(t.due_date)!==null&&daysLeft(t.due_date)<=0).length;
-                const pct  = mt.length>0?Math.round((done/mt.length)*100):0;
-                return (
-                  <div key={member.id} style={{background:"#0F1117",border:"1px solid #1E2130",borderRadius:14,padding:16}}>
-                    <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}>
-                      <div className="avatar" style={{width:42,height:42,background:member.color+"22",color:member.color,fontSize:13,border:`2px solid ${member.color}33`}}>{member.avatar}</div>
-                      <div style={{flex:1}}>
-                        <div style={{fontWeight:700,fontSize:13}}>{member.name}</div>
-                        <span className="badge" style={{color:ROLE_COLOR[member.role],background:ROLE_COLOR[member.role]+"15",fontSize:10}}>{ROLE_LABEL[member.role]}</span>
-                      </div>
-                      {ov>0&&<span className="badge" style={{color:"#FF4D4D",background:"rgba(255,77,77,.1)",fontSize:10}}>⚠ {ov}</span>}
-                    </div>
-                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,marginBottom:10}}>
-                      {[["Pend.",mt.filter(t=>t.status==="pendiente").length,"#8891B0"],["Proceso",mt.filter(t=>t.status==="en-proceso").length,"#FF9500"],["Listo",done,"#30D158"]].map(([l,v,c])=>(
-                        <div key={l} style={{background:"#0A0B10",borderRadius:8,padding:"8px 6px",textAlign:"center",border:"1px solid #1E2130"}}>
-                          <div className="font-display" style={{fontSize:22,color:c,lineHeight:1,letterSpacing:"-0.5px"}}>{v}</div>
-                          <div style={{fontSize:9,color:"#4A5178",textTransform:"uppercase",letterSpacing:".5px",fontWeight:700,marginTop:2}}>{l}</div>
-                        </div>
-                      ))}
-                    </div>
-                    <div style={{height:4,background:"#1E2130",borderRadius:2,overflow:"hidden"}}>
-                      <div style={{height:"100%",background:`linear-gradient(90deg,${member.color},${member.color}88)`,borderRadius:2,width:`${pct}%`,transition:"width .6s ease"}}/>
-                    </div>
-                    <div style={{fontSize:10,color:"#4A5178",marginTop:5,textAlign:"right",fontWeight:700}}>{pct}% completado</div>
-                  </div>
-                );
-              })}
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+              <div className="font-display" style={{fontSize:18,color:"#F0F2FF",letterSpacing:"-0.3px"}}>Equipo</div>
+              {selectedMember&&(
+                <button className="btn btn-glass" style={{fontSize:12}} onClick={()=>setSelectedMember(null)}>← Ver todos</button>
+              )}
             </div>
+            <div style={{color:"#4A5178",fontSize:12,marginBottom:18,fontWeight:600}}>
+              {selectedMember ? `Tareas de ${selectedMember.name.split(" ")[0]}` : "Carga y progreso · clic en una persona para ver sus tareas"}
+            </div>
+
+            {/* Member tasks drill-down */}
+            {selectedMember ? (
+              <div>
+                <div style={{display:"flex",alignItems:"center",gap:10,background:"#0F1117",border:"1px solid #1E2130",borderRadius:12,padding:"12px 16px",marginBottom:14}}>
+                  <div className="avatar" style={{width:40,height:40,background:selectedMember.color+"22",color:selectedMember.color,fontSize:13,border:`2px solid ${selectedMember.color}33`}}>{selectedMember.avatar}</div>
+                  <div>
+                    <div style={{fontWeight:700,fontSize:14}}>{selectedMember.name}</div>
+                    <span className="badge" style={{color:getRoleColor(selectedMember.role),background:getRoleColor(selectedMember.role)+"15",fontSize:10}}>{getRoleLabel(selectedMember.role)}</span>
+                  </div>
+                </div>
+                {tasks.filter(t=>t.assigned_to===selectedMember.id).length===0
+                  ? <div style={{textAlign:"center",color:"#4A5178",padding:"32px 0",fontSize:13,fontWeight:600}}>📭 Sin tareas asignadas</div>
+                  : [...tasks.filter(t=>t.assigned_to===selectedMember.id)].sort((a,b)=>PRIO_ORDER[a.priority]-PRIO_ORDER[b.priority]).map(task=>{
+                      const prio=PRIORITIES.find(p=>p.value===task.priority);
+                      const dl=daysLeft(task.due_date);
+                      const isOver=dl!==null&&dl<=0&&task.status!=="completado";
+                      return (
+                        <div key={task.id} className="task-row" style={{borderLeft:`3px solid ${isOver?"#FF4D4D":task.status==="completado"?"#30D15844":"transparent"}`}}>
+                          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10}}>
+                            <div style={{flex:1}}>
+                              <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",marginBottom:3}}>
+                                <span style={{fontWeight:700,fontSize:13,color:task.status==="completado"?"#4A5178":"#F0F2FF",textDecoration:task.status==="completado"?"line-through":"none"}}>{task.title}</span>
+                                {prio&&<span className="badge" style={{color:prio.color,background:prio.bg,fontSize:10}}>{prio.label}</span>}
+                                {task.cartera&&<span className="badge" style={{color:"#8891B0",background:"rgba(136,145,176,.1)",fontSize:10}}>{task.cartera.replace("Cartera ","")}</span>}
+                              </div>
+                              <div style={{fontSize:11,color:"#4A5178",fontWeight:600,display:"flex",gap:10,flexWrap:"wrap"}}>
+                                {task.due_date&&<span style={{color:isOver?"#FF4D4D":"#4A5178"}}>◎ {fmtDate(task.due_date)}</span>}
+                                {task.task_time&&<span>🕐 {task.task_time}</span>}
+                              </div>
+                            </div>
+                            <span style={{background:task.status==="completado"?"rgba(48,209,88,.12)":task.status==="en-proceso"?"rgba(255,149,0,.12)":"rgba(136,145,176,.08)",color:task.status==="completado"?"#30D158":task.status==="en-proceso"?"#FF9500":"#8891B0",padding:"4px 10px",borderRadius:6,fontSize:10,fontWeight:800,textTransform:"uppercase",flexShrink:0}}>
+                              {task.status==="completado"?"✓ Hecho":task.status==="en-proceso"?"● Proceso":"○ Pend."}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })
+                }
+              </div>
+            ) : (
+              <>
+                {isGerente&&<ManageUsers users={users} onRefresh={refreshUsers} showToast={showToast} roles={roles} saveRoles={saveRoles} carteras={carteras} saveCarteras={saveCarteras} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} />}
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(250px,1fr))",gap:10,marginTop:isGerente?0:0}}>
+                  {users.filter(u=>u.role!=="gerente").map(member=>{
+                    const mt   = tasks.filter(t=>t.assigned_to===member.id);
+                    const done = mt.filter(t=>t.status==="completado").length;
+                    const ov   = mt.filter(t=>t.status!=="completado"&&daysLeft(t.due_date)!==null&&daysLeft(t.due_date)<=0).length;
+                    const pct  = mt.length>0?Math.round((done/mt.length)*100):0;
+                    return (
+                      <div key={member.id} onClick={()=>setSelectedMember(member)} style={{background:"#0F1117",border:"1px solid #1E2130",borderRadius:14,padding:16,cursor:"pointer",transition:"all .18s"}}
+                        onMouseEnter={e=>e.currentTarget.style.borderColor="#2A2D3E"}
+                        onMouseLeave={e=>e.currentTarget.style.borderColor="#1E2130"}>
+                        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}>
+                          <div className="avatar" style={{width:42,height:42,background:member.color+"22",color:member.color,fontSize:13,border:`2px solid ${member.color}33`}}>{member.avatar}</div>
+                          <div style={{flex:1}}>
+                            <div style={{fontWeight:700,fontSize:13}}>{member.name}</div>
+                            <span className="badge" style={{color:getRoleColor(member.role),background:getRoleColor(member.role)+"15",fontSize:10}}>{getRoleLabel(member.role)}</span>
+                          </div>
+                          {ov>0&&<span className="badge" style={{color:"#FF4D4D",background:"rgba(255,77,77,.1)",fontSize:10}}>⚠ {ov}</span>}
+                        </div>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:5,marginBottom:10}}>
+                          {[["Pend.",mt.filter(t=>t.status==="pendiente").length,"#8891B0"],["Proceso",mt.filter(t=>t.status==="en-proceso").length,"#FF9500"],["Listo",done,"#30D158"],["Vencidas",ov,"#FF4D4D"]].map(([l,v,c])=>(
+                            <div key={l} style={{background:l==="Vencidas"&&v>0?"rgba(255,77,77,.06)":"#0A0B10",borderRadius:8,padding:"8px 4px",textAlign:"center",border:`1px solid ${l==="Vencidas"&&v>0?"rgba(255,77,77,.25)":"#1E2130"}`}}>
+                              <div className="font-display" style={{fontSize:20,color:l==="Vencidas"&&v===0?"#2A2D3E":c,lineHeight:1,letterSpacing:"-0.5px"}}>{v}</div>
+                              <div style={{fontSize:8,color:l==="Vencidas"&&v>0?c:"#4A5178",textTransform:"uppercase",letterSpacing:".4px",fontWeight:700,marginTop:2}}>{l}</div>
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{height:4,background:"#1E2130",borderRadius:2,overflow:"hidden"}}>
+                          <div style={{height:"100%",background:`linear-gradient(90deg,${member.color},${member.color}88)`,borderRadius:2,width:`${pct}%`,transition:"width .6s ease"}}/>
+                        </div>
+                        <div style={{fontSize:10,color:"#4A5178",marginTop:5,textAlign:"right",fontWeight:700}}>{pct}% completado · {mt.length} tareas</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
           </>
         )}
       </div>
@@ -906,7 +981,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout }) {
 
       {/* ── MODALES ── */}
       {showNewTask&&(
-        <TaskModal mode="create" currentUser={currentUser} users={users} tasks={tasks} meetings={meetings} onClose={()=>setShowNewTask(false)}
+        <TaskModal mode="create" currentUser={currentUser} users={users} tasks={tasks} meetings={meetings} carteras={carteras} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} onClose={()=>setShowNewTask(false)}
           onSave={async form=>{
             const assignees = Array.isArray(form.assignedTo)?form.assignedTo:[form.assignedTo];
             for(const uid of assignees){
@@ -920,7 +995,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout }) {
       )}
 
       {editingTask&&(
-        <TaskModal mode="edit" task={editingTask} currentUser={currentUser} users={users} tasks={tasks} meetings={meetings} onClose={()=>setEditingTask(null)}
+        <TaskModal mode="edit" task={editingTask} currentUser={currentUser} users={users} tasks={tasks} meetings={meetings} carteras={carteras} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} onClose={()=>setEditingTask(null)}
           onSave={async form=>{
             const data={title:form.title,description:form.description,assigned_to:Array.isArray(form.assignedTo)?form.assignedTo[0]:form.assignedTo,priority:form.priority,due_date:form.due_date,start_date:form.start_date||null,task_time:form.task_time||null,cartera:form.cartera,recurrence:form.recurrence||null,recurrence_days:form.recurrence_days||null,recurrence_end:form.recurrence_end||null,notify_before:form.notify_before||null};
             await db.update("tasks",editingTask.id,data);
@@ -932,7 +1007,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout }) {
       )}
 
       {showNewMeeting&&(
-        <NewMeetingModal currentUser={currentUser} users={users} tasks={tasks} meetings={meetings} onClose={()=>setShowNewMeeting(false)}
+        <NewMeetingModal currentUser={currentUser} users={users} tasks={tasks} meetings={meetings} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} onClose={()=>setShowNewMeeting(false)}
           onSave={async form=>{
             const res=await db.insert("meetings",{...form,created_by:currentUser.id});
             if(Array.isArray(res)&&res[0]) setMeetings(p=>[res[0],...p]);
@@ -941,7 +1016,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout }) {
         />
       )}
 
-      {showVisibility&&<VisibilityModal task={showVisibility} users={users} onClose={()=>setShowVisibility(null)} onSave={saveVisibility}/>}
+      {showVisibility&&<VisibilityModal task={showVisibility} users={users} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} onClose={()=>setShowVisibility(null)} onSave={saveVisibility}/>}
 
       {showHistory&&(
         <div className="modal-overlay" onClick={e=>e.target===e.currentTarget&&setShowHistory(null)}>
@@ -982,6 +1057,63 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout }) {
         </div>
       )}
 
+      {/* CALENDAR ITEM DETAIL */}
+      {calSelectedItem&&(
+        <div className="modal-overlay" onClick={e=>e.target===e.currentTarget&&setCalSelectedItem(null)}>
+          <div className="modal" style={{maxWidth:420}}>
+            {calSelectedItem.type==="task"?(()=>{
+              const t=calSelectedItem;
+              const prio=PRIORITIES.find(p=>p.value===t.priority);
+              const assignee=users.find(u=>u.id===t.assigned_to);
+              const assigner=users.find(u=>u.id===t.assigned_by);
+              const dl=daysLeft(t.due_date);
+              return (
+                <>
+                  <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:4}}>
+                    <span style={{fontSize:18}}>📋</span>
+                    <div className="font-display" style={{fontSize:16,flex:1}}>{t.title}</div>
+                    {prio&&<span className="badge" style={{color:prio.color,background:prio.bg}}>{prio.label}</span>}
+                  </div>
+                  {t.description&&<div style={{fontSize:13,color:"#8891B0",marginBottom:12,lineHeight:1.6}}>{t.description}</div>}
+                  <div style={{display:"flex",flexDirection:"column",gap:7,marginBottom:16}}>
+                    {assignee&&<div style={{display:"flex",gap:8,alignItems:"center",fontSize:12}}><span style={{color:"#4A5178",fontWeight:700,width:80}}>Responsable</span><div className="avatar" style={{width:20,height:20,background:assignee.color+"22",color:assignee.color,fontSize:8}}>{assignee.avatar}</div><span style={{fontWeight:600}}>{assignee.name}</span></div>}
+                    {assigner&&<div style={{fontSize:12,color:"#4A5178"}}><span style={{fontWeight:700}}>Asignado por: </span><span style={{color:assigner.color}}>{assigner.name.split(" ")[0]}</span></div>}
+                    {t.due_date&&<div style={{fontSize:12,color:dl!==null&&dl<=0?"#FF4D4D":"#8891B0"}}><span style={{fontWeight:700,color:"#4A5178"}}>Vence: </span>{fmtDate(t.due_date)}{t.task_time&&` a las ${t.task_time}`}{dl!==null&&dl<=0&&" · VENCIDA"}</div>}
+                    {t.cartera&&<div style={{fontSize:12,color:"#8891B0"}}><span style={{fontWeight:700,color:"#4A5178"}}>Cartera: </span>{t.cartera}</div>}
+                    <div style={{fontSize:12}}><span style={{fontWeight:700,color:"#4A5178"}}>Estado: </span><span style={{color:t.status==="completado"?"#30D158":t.status==="en-proceso"?"#FF9500":"#8891B0",fontWeight:700}}>{t.status}</span></div>
+                  </div>
+                  <button className="btn btn-glass" style={{width:"100%",justifyContent:"center"}} onClick={()=>setCalSelectedItem(null)}>Cerrar</button>
+                </>
+              );
+            })():(()=>{
+              const m=calSelectedItem;
+              const mt=MEET_TYPES[m.type]||MEET_TYPES.otro;
+              const creator=users.find(u=>u.id===m.created_by);
+              return (
+                <>
+                  <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:4}}>
+                    <span style={{fontSize:18}}>{mt.icon}</span>
+                    <div className="font-display" style={{fontSize:16,flex:1}}>{m.title}</div>
+                    <span className="badge" style={{color:mt.color,background:mt.color+"15"}}>{mt.label}</span>
+                  </div>
+                  <div style={{display:"flex",flexDirection:"column",gap:7,marginBottom:14}}>
+                    <div style={{fontSize:12,color:"#8891B0"}}><span style={{fontWeight:700,color:"#4A5178"}}>Fecha: </span>{fmtDate(m.date)} a las {m.time}</div>
+                    {creator&&<div style={{fontSize:12,color:"#8891B0"}}><span style={{fontWeight:700,color:"#4A5178"}}>Creada por: </span>{creator.name.split(" ")[0]}</div>}
+                    {m.notes&&<div style={{fontSize:12,color:"#8891B0"}}><span style={{fontWeight:700,color:"#4A5178"}}>Agenda: </span>{m.notes}</div>}
+                    <div style={{fontSize:12,color:"#4A5178",fontWeight:700,marginTop:4}}>Participantes</div>
+                    <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                      {(m.participants||[]).map(pid=>{const u=users.find(x=>x.id===pid);return u?<div key={pid} style={{display:"flex",alignItems:"center",gap:5,background:"#0A0B10",borderRadius:6,padding:"4px 8px"}}><div className="avatar" style={{width:18,height:18,background:u.color+"22",color:u.color,fontSize:7}}>{u.avatar}</div><span style={{fontSize:11,fontWeight:600}}>{u.name.split(" ")[0]}</span></div>:null;})}
+                    </div>
+                    {m.acta&&<div style={{marginTop:6}}><div style={{fontSize:11,fontWeight:700,color:"#4A5178",textTransform:"uppercase",letterSpacing:".5px",marginBottom:4}}>Acta</div><div style={{fontSize:12,color:"#C8CAD8",lineHeight:1.6,background:"#0A0B10",borderRadius:8,padding:10,whiteSpace:"pre-wrap"}}>{m.acta}</div></div>}
+                  </div>
+                  <button className="btn btn-glass" style={{width:"100%",justifyContent:"center"}} onClick={()=>setCalSelectedItem(null)}>Cerrar</button>
+                </>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+
       {/* TOAST */}
       {toast&&(
         <div className="toast-wrap">
@@ -995,7 +1127,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout }) {
 // ══════════════════════════════════════════════════════════════════════════
 // CALENDAR VIEW
 // ══════════════════════════════════════════════════════════════════════════
-function CalendarView({ tasks, meetings, users, calDate, setCalDate, calView, setCalView }) {
+function CalendarView({ tasks, meetings, users, calDate, setCalDate, calView, setCalView, onItemClick }) {
   const year     = calDate.getFullYear();
   const month    = calDate.getMonth();
   const today    = todayStr();
@@ -1029,11 +1161,11 @@ function CalendarView({ tasks, meetings, users, calDate, setCalDate, calView, se
                 <div style={{fontSize:12,fontWeight:isToday?800:600,color:isToday?"#FF4D4D":"#8891B0",marginBottom:4,lineHeight:1}}>{d}</div>
                 {dayTasks.slice(0,2).map(t=>{
                   const prio=PRIORITIES.find(p=>p.value===t.priority);
-                  return <div key={t.id} className="cal-event" style={{background:prio?prio.bg:"#1E2130",color:prio?prio.color:"#8891B0"}} title={t.title}>{t.title}</div>;
+                  return <div key={t.id} className="cal-event" style={{background:prio?prio.bg:"#1E2130",color:prio?prio.color:"#8891B0",cursor:"pointer"}} title={t.title} onClick={e=>{e.stopPropagation();onItemClick({type:"task",...t});}}>{t.title}</div>;
                 })}
                 {dayMeets.slice(0,1).map(m=>{
                   const mt=MEET_TYPES[m.type]||MEET_TYPES.otro;
-                  return <div key={m.id} className="cal-event" style={{background:mt.color+"18",color:mt.color}} title={m.title}>{mt.icon} {m.title}</div>;
+                  return <div key={m.id} className="cal-event" style={{background:mt.color+"18",color:mt.color,cursor:"pointer"}} title={m.title} onClick={e=>{e.stopPropagation();onItemClick({type:"meeting",...m});}}>{mt.icon} {m.title}</div>;
                 })}
                 {(dayTasks.length+dayMeets.length)>3&&<div style={{fontSize:9,color:"#4A5178",fontWeight:700}}>+{dayTasks.length+dayMeets.length-3}</div>}
               </div>
@@ -1184,7 +1316,7 @@ function CalendarView({ tasks, meetings, users, calDate, setCalDate, calView, se
 // ══════════════════════════════════════════════════════════════════════════
 // TASK MODAL — with task_time + live conflict detection
 // ══════════════════════════════════════════════════════════════════════════
-function TaskModal({ mode, task, currentUser, users, tasks, meetings, onClose, onSave }) {
+function TaskModal({ mode, task, currentUser, users, tasks, meetings, carteras, getRoleLabel, getRoleColor, onClose, onSave }) {
   const init = task ? {
     title:task.title||"", description:task.description||"",
     assignedTo:[task.assigned_to], priority:task.priority||"media",
@@ -1245,7 +1377,7 @@ function TaskModal({ mode, task, currentUser, users, tasks, meetings, onClose, o
                   <input type="checkbox" checked={form.assignedTo.includes(u.id)} onChange={()=>toggleA(u.id)} style={{accentColor:u.color}} />
                   <div className="avatar" style={{width:20,height:20,background:u.color+"22",color:u.color,fontSize:7}}>{u.avatar}</div>
                   <span style={{fontSize:12,flex:1,fontWeight:600}}>{u.role==="gerente"?"Gerente":u.name.split(" ")[0]}</span>
-                  <span style={{fontSize:9,color:ROLE_COLOR[u.role],fontWeight:700}}>{ROLE_LABEL[u.role]}</span>
+                  <span style={{fontSize:9,color:getRoleColor(u.role),fontWeight:700}}>{getRoleLabel(u.role)}</span>
                 </label>
               ))}
             </div>
@@ -1253,7 +1385,7 @@ function TaskModal({ mode, task, currentUser, users, tasks, meetings, onClose, o
 
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
             <div><label className="label">Prioridad</label><select className="input" value={form.priority} onChange={e=>setForm({...form,priority:e.target.value})}>{PRIORITIES.map(p=><option key={p.value} value={p.value}>{p.label}</option>)}</select></div>
-            <div><label className="label">Cartera</label><select className="input" value={form.cartera} onChange={e=>setForm({...form,cartera:e.target.value})}>{CARTERAS.map(c=><option key={c} value={c}>{c}</option>)}</select></div>
+            <div><label className="label">Cartera</label><select className="input" value={form.cartera} onChange={e=>setForm({...form,cartera:e.target.value})}>{carteras.map(c=><option key={c} value={c}>{c}</option>)}</select></div>
           </div>
 
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
@@ -1402,7 +1534,7 @@ function CommentInput({ onAdd }) {
 // ══════════════════════════════════════════════════════════════════════════
 // VISIBILITY MODAL
 // ══════════════════════════════════════════════════════════════════════════
-function VisibilityModal({ task, users, onClose, onSave }) {
+function VisibilityModal({ task, users, getRoleLabel, getRoleColor, onClose, onSave }) {
   const [selected, setSelected] = useState(task.visible_to||[]);
   const toggle = id => setSelected(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id]);
   return (
@@ -1431,46 +1563,172 @@ function VisibilityModal({ task, users, onClose, onSave }) {
 // ══════════════════════════════════════════════════════════════════════════
 // MANAGE USERS
 // ══════════════════════════════════════════════════════════════════════════
-function ManageUsers({ users, onRefresh, showToast }) {
-  const [editing, setEditing] = useState(null);
-  const [form,    setForm]    = useState({});
-  const startEdit = u => { setEditing(u.id); setForm({name:u.name,username:u.username,email:u.email||"",password:u.password,role:u.role}); };
-  const save = async () => {
-    await db.update("users",editing,form);
+function ManageUsers({ users, onRefresh, showToast, roles, saveRoles, carteras, saveCarteras, getRoleLabel, getRoleColor }) {
+  const [tab,      setTab]      = useState("usuarios"); // usuarios | carteras | roles
+  const [editing,  setEditing]  = useState(null);
+  const [form,     setForm]     = useState({});
+  const [showAdd,  setShowAdd]  = useState(false);
+  const [newUser,  setNewUser]  = useState({name:"",username:"",email:"",password:"",role:roles[0]?.key||"analista",avatar:"👤",color:"#8891B0"});
+  const [newCartera, setNewCartera] = useState("");
+  const [editCartera,setEditCartera]= useState(null); // {idx, val}
+  const [newRole,  setNewRole]  = useState({key:"",label:"",color:"#8891B0"});
+  const [editRole, setEditRole] = useState(null); // idx
+  const COLORS = ["#FF4D4D","#FF9500","#30D158","#0A84FF","#BF5AF2","#FF6B6B","#4ECDC4","#FFE66D","#8891B0"];
+
+  const startEdit = u => { setEditing(u.id); setForm({name:u.name,username:u.username,email:u.email||"",password:u.password,role:u.role,color:u.color,avatar:u.avatar}); };
+  const saveUser  = async () => { await db.update("users",editing,form); await onRefresh(); setEditing(null); showToast("Usuario actualizado ✓"); };
+  const deleteUser= async id => { if(!window.confirm("¿Eliminar este usuario?")) return; await db.delete("users",id); await onRefresh(); showToast("Usuario eliminado"); };
+  const addUser   = async () => {
+    if (!newUser.name.trim()||!newUser.username.trim()||!newUser.password.trim()) { alert("Completa nombre, usuario y contraseña"); return; }
+    await db.insert("users",newUser);
     await onRefresh();
-    setEditing(null);
-    showToast("Usuario actualizado ✓");
+    setShowAdd(false);
+    setNewUser({name:"",username:"",email:"",password:"",role:roles[0]?.key||"analista",avatar:"👤",color:"#8891B0"});
+    showToast("Usuario agregado ✓");
   };
+
   return (
-    <div style={{background:"#0F1117",border:"1px solid #1E2130",borderRadius:14,padding:16,marginBottom:4}}>
-      <div style={{fontSize:10,fontWeight:700,color:"#4A5178",textTransform:"uppercase",letterSpacing:".7px",marginBottom:12}}>🔑 Gestión de usuarios</div>
-      <div style={{overflowX:"auto"}}>
-        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-          <thead><tr style={{borderBottom:"1px solid #1E2130"}}>{["Nombre","Usuario","Correo","Contraseña","Rol",""].map(h=><th key={h} style={{textAlign:"left",padding:"5px 10px",color:"#4A5178",fontWeight:700,fontSize:10,textTransform:"uppercase"}}>{h}</th>)}</tr></thead>
-          <tbody>
-            {users.map(u=>(
-              <tr key={u.id} style={{borderBottom:"1px solid #1E213044"}}>
-                {editing===u.id?(
-                  <>
-                    {["name","username","email","password"].map(f=><td key={f} style={{padding:"5px 6px"}}><input className="input" style={{padding:"5px 9px",fontSize:11}} value={form[f]||""} onChange={e=>setForm({...form,[f]:e.target.value})} placeholder={f==="email"?"correo@empresa.com":""} /></td>)}
-                    <td style={{padding:"5px 6px"}}><select className="input" style={{padding:"5px 9px",fontSize:11}} value={form.role} onChange={e=>setForm({...form,role:e.target.value})}><option value="gerente">Gerente</option><option value="supervisor">Supervisor</option><option value="analista">Analista</option></select></td>
-                    <td style={{padding:"5px 6px"}}><div style={{display:"flex",gap:4}}><button className="btn btn-red" style={{padding:"4px 10px",fontSize:11}} onClick={save}>✓</button><button className="btn btn-glass" style={{padding:"4px 8px",fontSize:11}} onClick={()=>setEditing(null)}>✕</button></div></td>
-                  </>
-                ):(
-                  <>
-                    <td style={{padding:"8px 10px"}}><div style={{display:"flex",alignItems:"center",gap:6}}><div className="avatar" style={{width:22,height:22,background:u.color+"22",color:u.color,fontSize:8}}>{u.avatar}</div><span style={{fontWeight:700}}>{u.name}</span></div></td>
-                    <td style={{padding:"8px 10px",fontFamily:"monospace",color:"#0A84FF",fontSize:11}}>{u.username}</td>
-                    <td style={{padding:"8px 10px",color:"#8891B0",fontSize:11}}>{u.email||<span style={{color:"#4A5178"}}>sin correo</span>}</td>
-                    <td style={{padding:"8px 10px",fontFamily:"monospace",color:"#8891B0",fontSize:11}}>{u.password}</td>
-                    <td style={{padding:"8px 10px"}}><span className="badge" style={{color:ROLE_COLOR[u.role],background:ROLE_COLOR[u.role]+"15",fontSize:10}}>{ROLE_LABEL[u.role]}</span></td>
-                    <td style={{padding:"8px 10px"}}><button className="btn-icon" style={{fontSize:11}} onClick={()=>startEdit(u)}>✏</button></td>
-                  </>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+    <div style={{background:"#0F1117",border:"1px solid #1E2130",borderRadius:14,padding:16,marginBottom:16}}>
+      {/* Tabs */}
+      <div style={{display:"flex",gap:2,marginBottom:14,borderBottom:"1px solid #1E2130",paddingBottom:10}}>
+        {[["usuarios","👥 Usuarios"],["carteras","🗂 Carteras"],["roles","🏷 Roles"]].map(([t,l])=>(
+          <button key={t} className={`tab-btn ${tab===t?"active":""}`} style={{fontSize:11,padding:"5px 12px",background:"none",border:"none",cursor:"pointer",fontFamily:"'Outfit',sans-serif",fontWeight:700,color:tab===t?"#FF4D4D":"#4A5178",borderBottom:`2px solid ${tab===t?"#FF4D4D":"transparent"}`,transition:"all .15s"}} onClick={()=>setTab(t)}>{l}</button>
+        ))}
       </div>
+
+      {/* ── USUARIOS ── */}
+      {tab==="usuarios"&&(
+        <>
+          <div style={{overflowX:"auto",marginBottom:10}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+              <thead><tr style={{borderBottom:"1px solid #1E2130"}}>{["Nombre","Usuario","Correo","Contraseña","Rol",""].map(h=><th key={h} style={{textAlign:"left",padding:"5px 10px",color:"#4A5178",fontWeight:700,fontSize:10,textTransform:"uppercase"}}>{h}</th>)}</tr></thead>
+              <tbody>
+                {users.map(u=>(
+                  <tr key={u.id} style={{borderBottom:"1px solid #1E213044"}}>
+                    {editing===u.id?(
+                      <>
+                        <td style={{padding:"5px 6px"}}><input className="input" style={{padding:"5px 9px",fontSize:11}} value={form.name} onChange={e=>setForm({...form,name:e.target.value})} /></td>
+                        <td style={{padding:"5px 6px"}}><input className="input" style={{padding:"5px 9px",fontSize:11}} value={form.username} onChange={e=>setForm({...form,username:e.target.value})} /></td>
+                        <td style={{padding:"5px 6px"}}><input className="input" style={{padding:"5px 9px",fontSize:11}} value={form.email||""} placeholder="correo@empresa.com" onChange={e=>setForm({...form,email:e.target.value})} /></td>
+                        <td style={{padding:"5px 6px"}}><input className="input" style={{padding:"5px 9px",fontSize:11}} value={form.password} onChange={e=>setForm({...form,password:e.target.value})} /></td>
+                        <td style={{padding:"5px 6px"}}>
+                          <select className="input" style={{padding:"5px 9px",fontSize:11}} value={form.role} onChange={e=>setForm({...form,role:e.target.value})}>
+                            {roles.map(r=><option key={r.key} value={r.key}>{r.label}</option>)}
+                          </select>
+                        </td>
+                        <td style={{padding:"5px 6px"}}><div style={{display:"flex",gap:4}}><button className="btn btn-red" style={{padding:"4px 10px",fontSize:11}} onClick={saveUser}>✓</button><button className="btn btn-glass" style={{padding:"4px 8px",fontSize:11}} onClick={()=>setEditing(null)}>✕</button></div></td>
+                      </>
+                    ):(
+                      <>
+                        <td style={{padding:"8px 10px"}}><div style={{display:"flex",alignItems:"center",gap:6}}><div className="avatar" style={{width:22,height:22,background:u.color+"22",color:u.color,fontSize:9}}>{u.avatar}</div><span style={{fontWeight:700}}>{u.name}</span></div></td>
+                        <td style={{padding:"8px 10px",fontFamily:"monospace",color:"#0A84FF",fontSize:11}}>{u.username}</td>
+                        <td style={{padding:"8px 10px",color:"#8891B0",fontSize:11}}>{u.email||<span style={{color:"#4A5178"}}>sin correo</span>}</td>
+                        <td style={{padding:"8px 10px",fontFamily:"monospace",color:"#8891B0",fontSize:11}}>{u.password}</td>
+                        <td style={{padding:"8px 10px"}}><span className="badge" style={{color:getRoleColor(u.role),background:getRoleColor(u.role)+"15",fontSize:10}}>{getRoleLabel(u.role)}</span></td>
+                        <td style={{padding:"8px 10px"}}><div style={{display:"flex",gap:4}}>
+                          <button className="btn-icon" style={{fontSize:11}} onClick={()=>startEdit(u)}>✏</button>
+                          <button className="btn-danger-icon" style={{fontSize:10}} onClick={()=>deleteUser(u.id)}>🗑</button>
+                        </div></td>
+                      </>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {/* Add user */}
+          {showAdd?(
+            <div style={{background:"#0A0B10",border:"1px solid #1E2130",borderRadius:10,padding:12}}>
+              <div style={{fontSize:11,fontWeight:700,color:"#4A5178",marginBottom:10,textTransform:"uppercase",letterSpacing:".6px"}}>Nuevo usuario</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+                <div><label className="label">Nombre *</label><input className="input" style={{fontSize:12}} placeholder="Ana Rodríguez" value={newUser.name} onChange={e=>setNewUser({...newUser,name:e.target.value})} /></div>
+                <div><label className="label">Usuario *</label><input className="input" style={{fontSize:12}} placeholder="arodriguez" value={newUser.username} onChange={e=>setNewUser({...newUser,username:e.target.value})} /></div>
+                <div><label className="label">Correo</label><input className="input" style={{fontSize:12}} placeholder="correo@empresa.com" value={newUser.email} onChange={e=>setNewUser({...newUser,email:e.target.value})} /></div>
+                <div><label className="label">Contraseña *</label><input className="input" style={{fontSize:12}} placeholder="••••••" value={newUser.password} onChange={e=>setNewUser({...newUser,password:e.target.value})} /></div>
+                <div><label className="label">Rol</label>
+                  <select className="input" style={{fontSize:12}} value={newUser.role} onChange={e=>setNewUser({...newUser,role:e.target.value})}>
+                    {roles.map(r=><option key={r.key} value={r.key}>{r.label}</option>)}
+                  </select>
+                </div>
+                <div><label className="label">Color</label>
+                  <div style={{display:"flex",gap:5,flexWrap:"wrap",marginTop:2}}>
+                    {COLORS.map(c=><button key={c} onClick={()=>setNewUser({...newUser,color:c})} style={{width:22,height:22,borderRadius:"50%",background:c,border:newUser.color===c?"2px solid #fff":"2px solid transparent",cursor:"pointer"}}/>)}
+                  </div>
+                </div>
+              </div>
+              <div style={{display:"flex",gap:8}}>
+                <button className="btn btn-glass" style={{flex:1,justifyContent:"center",fontSize:12}} onClick={()=>setShowAdd(false)}>Cancelar</button>
+                <button className="btn btn-red" style={{flex:2,justifyContent:"center",fontSize:12}} onClick={addUser}>Agregar usuario ✓</button>
+              </div>
+            </div>
+          ):(
+            <button className="btn btn-glass" style={{width:"100%",justifyContent:"center",fontSize:12}} onClick={()=>setShowAdd(true)}>+ Agregar usuario</button>
+          )}
+        </>
+      )}
+
+      {/* ── CARTERAS ── */}
+      {tab==="carteras"&&(
+        <div>
+          {carteras.map((c,i)=>(
+            <div key={i} style={{display:"flex",gap:8,alignItems:"center",marginBottom:6}}>
+              {editCartera?.idx===i?(
+                <>
+                  <input className="input" style={{flex:1,fontSize:12,padding:"7px 10px"}} value={editCartera.val} onChange={e=>setEditCartera({idx:i,val:e.target.value})} autoFocus />
+                  <button className="btn btn-red" style={{padding:"6px 12px",fontSize:11}} onClick={()=>{const n=[...carteras];n[i]=editCartera.val.trim()||c;saveCarteras(n);setEditCartera(null);showToast("Cartera actualizada ✓");}}>✓</button>
+                  <button className="btn btn-glass" style={{padding:"6px 10px",fontSize:11}} onClick={()=>setEditCartera(null)}>✕</button>
+                </>
+              ):(
+                <>
+                  <div style={{flex:1,background:"#0A0B10",border:"1px solid #1E2130",borderRadius:8,padding:"8px 12px",fontSize:12,fontWeight:600,color:"#F0F2FF"}}>🗂 {c}</div>
+                  <button className="btn-icon" style={{fontSize:11}} onClick={()=>setEditCartera({idx:i,val:c})}>✏</button>
+                  <button className="btn-danger-icon" style={{fontSize:10}} onClick={()=>{if(!window.confirm(`¿Eliminar "${c}"?`))return;saveCarteras(carteras.filter((_,j)=>j!==i));showToast("Cartera eliminada");}}>🗑</button>
+                </>
+              )}
+            </div>
+          ))}
+          <div style={{display:"flex",gap:8,marginTop:10}}>
+            <input className="input" style={{flex:1,fontSize:12,padding:"8px 12px"}} placeholder="Nueva cartera..." value={newCartera} onChange={e=>setNewCartera(e.target.value)} onKeyDown={e=>e.key==="Enter"&&newCartera.trim()&&(saveCarteras([...carteras,newCartera.trim()]),setNewCartera(""),showToast("Cartera agregada ✓"))} />
+            <button className="btn btn-red" style={{padding:"8px 14px",fontSize:12}} onClick={()=>{if(!newCartera.trim())return;saveCarteras([...carteras,newCartera.trim()]);setNewCartera("");showToast("Cartera agregada ✓");}}>+ Agregar</button>
+          </div>
+        </div>
+      )}
+
+      {/* ── ROLES ── */}
+      {tab==="roles"&&(
+        <div>
+          {roles.map((r,i)=>(
+            <div key={i} style={{display:"flex",gap:8,alignItems:"center",marginBottom:6}}>
+              {editRole===i?(
+                <div style={{flex:1,background:"#0A0B10",border:"1px solid #1E2130",borderRadius:8,padding:10,display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                  <input className="input" style={{flex:1,fontSize:12,padding:"6px 10px",minWidth:100}} placeholder="Nombre del rol" value={r.label} onChange={e=>{const n=[...roles];n[i]={...n[i],label:e.target.value};saveRoles(n);}} />
+                  <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                    {COLORS.map(c=><button key={c} onClick={()=>{const n=[...roles];n[i]={...n[i],color:c};saveRoles(n);}} style={{width:20,height:20,borderRadius:"50%",background:c,border:r.color===c?"2px solid #fff":"2px solid transparent",cursor:"pointer"}}/>)}
+                  </div>
+                  <button className="btn btn-red" style={{padding:"5px 10px",fontSize:11}} onClick={()=>setEditRole(null)}>✓</button>
+                </div>
+              ):(
+                <>
+                  <div style={{flex:1,background:"#0A0B10",border:"1px solid #1E2130",borderRadius:8,padding:"8px 12px",display:"flex",alignItems:"center",gap:8}}>
+                    <div style={{width:10,height:10,borderRadius:"50%",background:r.color,flexShrink:0}}/>
+                    <span style={{fontSize:12,fontWeight:700,color:"#F0F2FF"}}>{r.label}</span>
+                    <span style={{fontSize:10,color:"#4A5178",fontFamily:"monospace"}}>{r.key}</span>
+                  </div>
+                  <button className="btn-icon" style={{fontSize:11}} onClick={()=>setEditRole(i)}>✏</button>
+                  <button className="btn-danger-icon" style={{fontSize:10}} onClick={()=>{if(!window.confirm(`¿Eliminar rol "${r.label}"?`))return;saveRoles(roles.filter((_,j)=>j!==i));showToast("Rol eliminado");}}>🗑</button>
+                </>
+              )}
+            </div>
+          ))}
+          <div style={{display:"flex",gap:8,marginTop:10,flexWrap:"wrap"}}>
+            <input className="input" style={{flex:1,fontSize:12,padding:"8px 12px",minWidth:100}} placeholder="Nombre (ej: Coordinador)" value={newRole.label} onChange={e=>setNewRole({...newRole,label:e.target.value,key:e.target.value.toLowerCase().replace(/\s+/g,"_")})} />
+            <div style={{display:"flex",gap:4,alignItems:"center"}}>
+              {COLORS.map(c=><button key={c} onClick={()=>setNewRole({...newRole,color:c})} style={{width:22,height:22,borderRadius:"50%",background:c,border:newRole.color===c?"2px solid #fff":"2px solid transparent",cursor:"pointer"}}/>)}
+            </div>
+            <button className="btn btn-red" style={{padding:"8px 14px",fontSize:12}} onClick={()=>{if(!newRole.label.trim())return;saveRoles([...roles,{...newRole,key:newRole.key||newRole.label.toLowerCase().replace(/\s+/g,"_")}]);setNewRole({key:"",label:"",color:"#8891B0"});showToast("Rol agregado ✓");}}>+ Agregar</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1478,7 +1736,7 @@ function ManageUsers({ users, onRefresh, showToast }) {
 // ══════════════════════════════════════════════════════════════════════════
 // NEW MEETING MODAL — with conflict detection
 // ══════════════════════════════════════════════════════════════════════════
-function NewMeetingModal({ currentUser, users, tasks, meetings, editingMeeting, onClose, onSave }) {
+function NewMeetingModal({ currentUser, users, tasks, meetings, editingMeeting, getRoleLabel, getRoleColor, onClose, onSave }) {
   const init = editingMeeting ? {
     title:editingMeeting.title||"", date:editingMeeting.date||"", time:editingMeeting.time||"",
     type:editingMeeting.type||"seguimiento", notes:editingMeeting.notes||"",
@@ -1572,7 +1830,7 @@ function NewMeetingModal({ currentUser, users, tasks, meetings, editingMeeting, 
                   <input type="checkbox" checked={form.participants.includes(u.id)} onChange={()=>toggle(u.id)} style={{accentColor:u.color}} />
                   <div className="avatar" style={{width:20,height:20,background:u.color+"22",color:u.color,fontSize:7}}>{u.avatar}</div>
                   <span style={{fontSize:12,flex:1,fontWeight:600}}>{u.role==="gerente"?"Gerente":u.name.split(" ")[0]}</span>
-                  <span style={{fontSize:9,color:ROLE_COLOR[u.role],fontWeight:700}}>{ROLE_LABEL[u.role]}</span>
+                  <span style={{fontSize:9,color:getRoleColor(u.role),fontWeight:700}}>{getRoleLabel(u.role)}</span>
                 </label>
               ))}
             </div>
