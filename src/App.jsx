@@ -521,6 +521,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
   const [activeStat,     setActiveStat]    = useState(null);
   const [showNewTask,    setShowNewTask]   = useState(false);
   const [showNewMeeting, setShowNewMeeting]= useState(false);
+  const [editingMeeting, setEditingMeeting]= useState(null);
   const [editingTask,    setEditingTask]   = useState(null);
   const [expandedTask,   setExpandedTask]  = useState(null);
   const [showVisibility, setShowVisibility]= useState(null);
@@ -529,6 +530,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
   const [showNotif,      setShowNotif]     = useState(false);
   const [calDate,        setCalDate]       = useState(new Date());
   const [calView,        setCalView]       = useState("mes");
+  const [calScope,       setCalScope]      = useState("todos"); // todos | mine
   const [toast,          setToast]         = useState(null);
   const [selectedMember, setSelectedMember]= useState(null); // for team click-through
   const [calSelectedItem,setCalSelectedItem]=useState(null); // for calendar click detail
@@ -1017,6 +1019,8 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
         {view==="calendario"&&(
           <CalendarView
             tasks={visibleTasks} meetings={meetings} users={users}
+            currentUser={currentUser}
+            calScope={calScope} setCalScope={setCalScope}
             isTaskVisible={isTaskVisible} calDate={calDate} setCalDate={setCalDate}
             calView={calView} setCalView={setCalView}
             onItemClick={item=>setCalSelectedItem(item)}
@@ -1068,7 +1072,10 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
                         showToast("Acta guardada ✓");
                       }} updatedBy={getUser(m.acta_updated_by)} />
                     </div>
-                    {canDelete(m)&&<button className="btn-danger-icon" onClick={()=>setConfirmDelete({type:"meeting",id:m.id,name:m.title})}>🗑</button>}
+                    <div style={{display:"flex",gap:6}}>
+                      {canDelete(m)&&<button className="btn btn-glass" style={{fontSize:11,padding:"5px 10px"}} onClick={()=>setEditingMeeting(m)}>✏ Editar</button>}
+                      {canDelete(m)&&<button className="btn-danger-icon" onClick={()=>setConfirmDelete({type:"meeting",id:m.id,name:m.title})}>🗑</button>}
+                    </div>
                   </div>
                 </div>
               );
@@ -1214,9 +1221,31 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
       {showNewMeeting&&(
         <NewMeetingModal currentUser={currentUser} users={users} tasks={tasks} meetings={meetings} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} onClose={()=>setShowNewMeeting(false)}
           onSave={async form=>{
-            const res=await db.insert("meetings",{...form,created_by:currentUser.id});
+            const clean = {...form,
+              recurrence:      form.recurrence      || null,
+              recurrence_days: form.recurrence_days?.length ? form.recurrence_days : null,
+              recurrence_end:  form.recurrence_end  || null,
+              notify_before:   form.notify_before?.length   ? form.notify_before   : null,
+            };
+            const res=await db.insert("meetings",{...clean,created_by:currentUser.id});
             if(Array.isArray(res)&&res[0]) setMeetings(p=>[normalizeMeeting(res[0]),...p]);
             setShowNewMeeting(false); showToast("Reunión agendada ✓"); refreshMeetings();
+          }}
+        />
+      )}
+
+      {editingMeeting&&(
+        <NewMeetingModal editingMeeting={editingMeeting} currentUser={currentUser} users={users} tasks={tasks} meetings={meetings} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} onClose={()=>setEditingMeeting(null)}
+          onSave={async form=>{
+            const clean = {...form,
+              recurrence:      form.recurrence      || null,
+              recurrence_days: form.recurrence_days?.length ? form.recurrence_days : null,
+              recurrence_end:  form.recurrence_end  || null,
+              notify_before:   form.notify_before?.length   ? form.notify_before   : null,
+            };
+            await db.update("meetings",editingMeeting.id,clean);
+            setMeetings(p=>p.map(m=>m.id===editingMeeting.id?normalizeMeeting({...m,...clean}):m));
+            setEditingMeeting(null); showToast("Reunión actualizada ✓"); refreshMeetings();
           }}
         />
       )}
@@ -1573,12 +1602,20 @@ function MetricasView({ tasks, meetings, users, getAssignees, getRoleLabel, getR
 // ══════════════════════════════════════════════════════════════════════════
 // CALENDAR VIEW
 // ══════════════════════════════════════════════════════════════════════════
-function CalendarView({ tasks, meetings, users, calDate, setCalDate, calView, setCalView, onItemClick }) {
+function CalendarView({ tasks, meetings, users, currentUser, calScope, setCalScope, calDate, setCalDate, calView, setCalView, onItemClick }) {
   const year     = calDate.getFullYear();
   const month    = calDate.getMonth();
   const today    = todayStr();
   const getUser  = id => users.find(u=>u.id===id);
-  const [selectedDay, setSelectedDay] = useState(null); // {ds, tasks, meetings}
+  const [selectedDay, setSelectedDay] = useState(null);
+
+  // Filter by scope
+  const filteredTasks = calScope === "mine"
+    ? tasks.filter(t => (Array.isArray(t.assigned_to)?t.assigned_to:[t.assigned_to]).includes(currentUser.id) || t.assigned_by===currentUser.id)
+    : tasks;
+  const filteredMeetings = calScope === "mine"
+    ? meetings.filter(m => (m.participants||[]).includes(currentUser.id) || m.created_by===currentUser.id)
+    : meetings;
 
   const dayStr = (y,m,d) => `${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
 
@@ -1595,11 +1632,11 @@ function CalendarView({ tasks, meetings, users, calDate, setCalDate, calView, se
 
     // Expand recurring into day map
     const tasksByDay = {}, meetsByDay = {};
-    tasks.forEach(t => {
+    filteredTasks.forEach(t => {
       const dates = expandRecurring({recurrence:t.recurrence,recurrence_days:t.recurrence_days,recurrence_end:t.recurrence_end,start_date:t.start_date,date:t.due_date}, rangeStart, rangeEnd);
       dates.forEach(ds => { if(!tasksByDay[ds]) tasksByDay[ds]=[]; tasksByDay[ds].push(t); });
     });
-    meetings.forEach(m => {
+    filteredMeetings.forEach(m => {
       const dates = expandRecurring({recurrence:m.recurrence,recurrence_days:m.recurrence_days,recurrence_end:m.recurrence_end,date:m.date}, rangeStart, rangeEnd);
       dates.forEach(ds => { if(!meetsByDay[ds]) meetsByDay[ds]=[]; meetsByDay[ds].push(m); });
     });
@@ -1702,8 +1739,8 @@ function CalendarView({ tasks, meetings, users, calDate, setCalDate, calView, se
       <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:6}}>
         {days.map((d,i)=>{
           const ds       = d.toISOString().split("T")[0];
-          const dayTasks = tasks.filter(t=>t.due_date===ds);
-          const dayMeets = meetings.filter(m=>m.date===ds);
+          const dayTasks = filteredTasks.filter(t=>t.due_date===ds);
+          const dayMeets = filteredMeetings.filter(m=>m.date===ds);
           const isToday  = ds===today;
           return (
             <div key={i} style={{background:isToday?"rgba(255,77,77,.04)":"#0F1117",border:`1px solid ${isToday?"rgba(255,77,77,.3)":"#1E2130"}`,borderRadius:12,padding:10,minHeight:200}}>
@@ -1728,8 +1765,8 @@ function CalendarView({ tasks, meetings, users, calDate, setCalDate, calView, se
   // ── DÍA ──
   const renderDay = () => {
     const ds       = calDate.toISOString().split("T")[0];
-    const dayTasks = tasks.filter(t=>t.due_date===ds);
-    const dayMeets = meetings.filter(m=>m.date===ds).sort((a,b)=>a.time.localeCompare(b.time));
+    const dayTasks = filteredTasks.filter(t=>t.due_date===ds);
+    const dayMeets = filteredMeetings.filter(m=>m.date===ds).sort((a,b)=>a.time.localeCompare(b.time));
     const isToday  = ds===today;
     return (
       <div style={{maxWidth:600,margin:"0 auto"}}>
@@ -1773,17 +1810,17 @@ function CalendarView({ tasks, meetings, users, calDate, setCalDate, calView, se
     const upcoming = [];
     for(let i=0;i<30;i++){
       const d = new Date(); d.setDate(d.getDate()+i);
-      const ds = d.toISOString().split("T")[0];
-      const dayTasks = tasks.filter(t=>t.due_date===ds);
-      const dayMeets = meetings.filter(m=>m.date===ds);
+      const ds = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+      const dayTasks = filteredTasks.filter(t=>t.due_date===ds);
+      const dayMeets = filteredMeetings.filter(m=>m.date===ds);
       if(dayTasks.length>0||dayMeets.length>0) upcoming.push({date:d,ds,dayTasks,dayMeets});
     }
     if(upcoming.length===0) return <div style={{textAlign:"center",color:"#4A5178",padding:"48px 0",fontSize:13,fontWeight:600}}>📭 Sin eventos en los próximos 30 días</div>;
     return upcoming.map(({date,ds,dayTasks,dayMeets})=>(
       <div key={ds} style={{marginBottom:16}}>
         <div style={{fontSize:12,fontWeight:800,color:"#4A5178",textTransform:"uppercase",letterSpacing:".6px",marginBottom:6,paddingLeft:4}}>{date.toLocaleDateString("es-ES",{weekday:"long",day:"numeric",month:"long"})}{ds===today&&<span className="badge" style={{color:"#FF4D4D",background:"rgba(255,77,77,.1)",marginLeft:8,fontSize:9}}>HOY</span>}</div>
-        {dayMeets.map(m=>{const mt=MEET_TYPES[m.type]||MEET_TYPES.otro;return <div key={m.id} style={{background:"#0F1117",border:`1px solid ${mt.color}33`,borderRadius:10,padding:"10px 14px",marginBottom:4,display:"flex",gap:10,alignItems:"center"}}><span>{mt.icon}</span><div><span style={{fontWeight:700,fontSize:13}}>{m.title}</span><span style={{fontSize:11,color:"#4A5178",fontWeight:600,marginLeft:8}}>🕐 {m.time}</span></div></div>;})}
-        {dayTasks.map(t=>{const prio=PRIORITIES.find(p=>p.value===t.priority);const u=getUser(t.assigned_to);return <div key={t.id} style={{background:"#0F1117",border:`1px solid ${prio?prio.color+"22":"#1E2130"}`,borderRadius:10,padding:"10px 14px",marginBottom:4,display:"flex",gap:8,alignItems:"center"}}>{u&&<div className="avatar" style={{width:24,height:24,background:u.color+"22",color:u.color,fontSize:8}}>{u.avatar}</div>}<span style={{fontWeight:600,fontSize:13,flex:1}}>{t.title}</span>{prio&&<span className="badge" style={{color:prio.color,background:prio.bg,fontSize:10}}>{prio.label}</span>}</div>;})}
+        {dayMeets.map(m=>{const mt=MEET_TYPES[m.type]||MEET_TYPES.otro;return <div key={m.id} onClick={()=>onItemClick({type:"meeting",...m})} style={{background:"#0F1117",border:`1px solid ${mt.color}33`,borderRadius:10,padding:"10px 14px",marginBottom:4,display:"flex",gap:10,alignItems:"center",cursor:"pointer"}}><span>{mt.icon}</span><div><span style={{fontWeight:700,fontSize:13}}>{m.title}</span><span style={{fontSize:11,color:"#4A5178",fontWeight:600,marginLeft:8}}>🕐 {m.time}</span></div></div>;})}
+        {dayTasks.map(t=>{const prio=PRIORITIES.find(p=>p.value===t.priority);const assignees=(Array.isArray(t.assigned_to)?t.assigned_to:[t.assigned_to]).map(id=>users.find(u=>u.id===id)).filter(Boolean);return <div key={t.id} onClick={()=>onItemClick({type:"task",...t})} style={{background:"#0F1117",border:`1px solid ${prio?prio.color+"22":"#1E2130"}`,borderRadius:10,padding:"10px 14px",marginBottom:4,display:"flex",gap:8,alignItems:"center",cursor:"pointer"}}>{assignees.slice(0,2).map(u=><div key={u.id} className="avatar" style={{width:24,height:24,background:u.color+"22",color:u.color,fontSize:8}}>{u.avatar}</div>)}<span style={{fontWeight:600,fontSize:13,flex:1}}>{t.title}</span>{prio&&<span className="badge" style={{color:prio.color,background:prio.bg,fontSize:10}}>{prio.label}</span>}</div>;})}
       </div>
     ));
   };
@@ -1808,7 +1845,13 @@ function CalendarView({ tasks, meetings, users, calDate, setCalDate, calView, se
   return (
     <div>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18,flexWrap:"wrap",gap:10}}>
-        <div className="font-display" style={{fontSize:18,color:"#F0F2FF",letterSpacing:"-0.3px"}}>{title}</div>
+        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+          <div className="font-display" style={{fontSize:18,color:"#F0F2FF",letterSpacing:"-0.3px"}}>{title}</div>
+          <div className="seg-control">
+            <button className={`seg-btn ${calScope==="todos"?"active":""}`} onClick={()=>setCalScope("todos")}>Todos</button>
+            <button className={`seg-btn ${calScope==="mine"?"active":""}`} onClick={()=>setCalScope("mine")}>Mis cosas</button>
+          </div>
+        </div>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
           <div className="seg-control">
             {[["mes","Mes"],["semana","Semana"],["dia","Día"],["agenda","Agenda"]].map(([v,l])=>(
