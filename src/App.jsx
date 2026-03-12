@@ -901,6 +901,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
 
             {/* Today's schedule strip */}
             {(()=>{
+              const today = todayStr();
               const toMins = t=>{if(!t)return null;const[h,m]=t.split(":").map(Number);return h*60+m;};
               const todayEvents = [
                 ...meetings.filter(m=>m.date===today&&m.time&&(taskScope==="all"||m.participants?.includes(currentUser.id))).map(m=>({
