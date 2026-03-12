@@ -1139,7 +1139,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
                         })()}
                       </div>
                       <div style={{fontSize:11,color:"#4A5178",marginBottom:10,fontWeight:600}}>
-                        🕐 {m.time}{m.time_end`–${m.time_end}`:""}{m.notes?` · ${m.notes}`:""}{creator?` · Por ${creator.role==="gerente"?"Gerente":creator.name.split(" ")[0]}`:""}</div>
+                        🕐 {m.time}{m.time_end?`–${m.time_end}`:""}{m.notes?` · ${m.notes}`:""}{creator?` · Por ${creator.role==="gerente"?"Gerente":creator.name.split(" ")[0]}`:""}</div>
                       <div style={{display:"flex",gap:3,flexWrap:"wrap",alignItems:"center",marginBottom:8}}>
                         {(m.participants||[]).map(pid=>{const u=getUser(pid);return u?<div key={pid} className="avatar" style={{width:22,height:22,background:u.color+"22",color:u.color,fontSize:8,border:`1px solid ${u.color}33`}} title={u.name}>{u.avatar}</div>:null;})}
                         <span style={{fontSize:10,color:"#4A5178",fontWeight:600,paddingLeft:4}}>{(m.participants||[]).length} participantes</span>
