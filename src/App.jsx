@@ -151,60 +151,69 @@ function expandRecurring(item, rangeStart, rangeEnd) {
 // ─── CONFLICT DETECTION ──────────────────────────────────────────────────
 // Returns list of conflict descriptions for given people + date + time
 // Checks ±60 min window around the proposed time
-function detectConflicts({ date, time, excludeId, excludeType, userIds, tasks, meetings, users }) {
+function detectConflicts({ date, time, timeEnd, excludeId, excludeType, userIds, tasks, meetings, users }) {
   if (!date || !time || !userIds || userIds.length === 0) return [];
   const getUser = id => users.find(u => u.id === id);
+  const normalizeIds = arr => (arr||[]).map(x => String(x));
+  const uids = normalizeIds(userIds);
 
-  const [hh, mm] = time.split(":").map(Number);
-  const proposedMins = hh * 60 + mm;
-  const WINDOW = 60; // minutes — events within 60 min are flagged
+  const toMins = t => { if(!t) return null; const [h,m]=t.split(":").map(Number); return h*60+m; };
+  const overlaps = (aStart, aEnd, bStart, bEnd) => {
+    // If no end times, use 60min window
+    const aE = aEnd ?? aStart + 60;
+    const bE = bEnd ?? bStart + 60;
+    return aStart < bE && aE > bStart;
+  };
 
+  const proposedStart = toMins(time);
+  const proposedEnd   = toMins(timeEnd);
   const conflicts = [];
 
-  userIds.forEach(uid => {
-    const person = getUser(uid);
+  uids.forEach(uid => {
+    const person = getUser(Number(uid)) || getUser(uid);
     if (!person) return;
 
-    // Check against meetings
     meetings.forEach(m => {
       if (excludeType === "meeting" && m.id === excludeId) return;
       if (m.date !== date) return;
-      if (!(m.participants || []).includes(uid)) return;
-      const [mh, mmin] = m.time.split(":").map(Number);
-      const meetMins = mh * 60 + mmin;
-      if (Math.abs(proposedMins - meetMins) < WINDOW) {
+      if (!normalizeIds(m.participants).includes(uid)) return;
+      if (!m.time) return;
+      const mStart = toMins(m.time);
+      const mEnd   = toMins(m.time_end);
+      if (overlaps(proposedStart, proposedEnd, mStart, mEnd)) {
         conflicts.push({
+          userId: uid,
           person: person.name.split(" ")[0],
           personColor: person.color,
           personAvatar: person.avatar,
           type: "reunión",
           icon: "🤝",
           title: m.title,
-          time: m.time,
+          time: m.time_end ? `${m.time}–${m.time_end}` : m.time,
           color: "#BF5AF2"
         });
       }
     });
 
-    // Check against tasks with time
     tasks.forEach(t => {
       if (excludeType === "task" && t.id === excludeId) return;
       if (t.due_date !== date) return;
       if (!t.task_time) return;
-      const taskAssignees = Array.isArray(t.assigned_to) ? t.assigned_to : (t.assigned_to ? [t.assigned_to] : []);
+      const taskAssignees = normalizeIds(Array.isArray(t.assigned_to) ? t.assigned_to : (t.assigned_to ? [t.assigned_to] : []));
       if (!taskAssignees.includes(uid)) return;
-      const [th, tmin] = t.task_time.split(":").map(Number);
-      const taskMins = th * 60 + tmin;
-      if (Math.abs(proposedMins - taskMins) < WINDOW) {
+      const tStart = toMins(t.task_time);
+      const tEnd   = toMins(t.task_time_end);
+      if (overlaps(proposedStart, proposedEnd, tStart, tEnd)) {
         const prio = PRIORITIES.find(p => p.value === t.priority);
         conflicts.push({
+          userId: uid,
           person: person.name.split(" ")[0],
           personColor: person.color,
           personAvatar: person.avatar,
           type: "tarea",
           icon: "📋",
           title: t.title,
-          time: t.task_time,
+          time: t.task_time_end ? `${t.task_time}–${t.task_time_end}` : t.task_time,
           color: prio?.color || "#8891B0"
         });
       }
@@ -431,6 +440,13 @@ export default function App() {
 
   const refreshUsers = () => db.get("users","select=*").then(d => setUsers(Array.isArray(d)?d:[]));
 
+  // Listen for profile updates from Dashboard and sync currentUser
+  useEffect(() => {
+    const handler = e => { setUser(e.detail); };
+    window.addEventListener("ct_profile_updated", handler);
+    return () => window.removeEventListener("ct_profile_updated", handler);
+  }, []);
+
   if (loading) return (
     <div style={{minHeight:"100vh",background:"#08090E",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'Outfit',sans-serif"}}>
       <style>{CSS}</style>
@@ -535,6 +551,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
   const [editingTask,    setEditingTask]   = useState(null);
   const [splitTasks,     setSplitTasks]   = useState(null); // {baseForm, perPerson:[{userId, form}]}
   const [showProfile,    setShowProfile]  = useState(false);
+  const [quickCreateDefaults, setQuickCreateDefaults] = useState(null);
   const [expandedTask,   setExpandedTask]  = useState(null);
   const [showVisibility, setShowVisibility]= useState(null);
   const [showHistory,    setShowHistory]   = useState(null);
@@ -563,6 +580,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
     due_date:        t.due_date        || null,
     start_date:      t.start_date      || null,
     task_time:       t.task_time       || null,
+    task_time_end:   t.task_time_end   || null,
     recurrence:      t.recurrence      || null,
     recurrence_days: t.recurrence_days || null,
     recurrence_end:  t.recurrence_end  || null,
@@ -578,6 +596,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
     title:           m.title           || "",
     date:            m.date            || null,
     time:            m.time            || "",
+    time_end:        m.time_end        || "",
     type:            m.type            || "otro",
     notes:           m.notes           || "",
     participants:    Array.isArray(m.participants) ? m.participants : [],
@@ -880,6 +899,45 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
               ))}
             </div>
 
+            {/* Today's schedule strip */}
+            {(()=>{
+              const toMins = t=>{if(!t)return null;const[h,m]=t.split(":").map(Number);return h*60+m;};
+              const todayEvents = [
+                ...meetings.filter(m=>m.date===today&&m.time&&(taskScope==="all"||m.participants?.includes(currentUser.id))).map(m=>({
+                  type:"meeting",key:"m"+m.id,title:m.title,start:toMins(m.time),end:toMins(m.time_end)||(toMins(m.time)+60),
+                  color:(MEET_TYPES[m.type]||MEET_TYPES.otro).color,icon:(MEET_TYPES[m.type]||MEET_TYPES.otro).icon,time:m.time,timeEnd:m.time_end,raw:m
+                })),
+                ...visibleTasks.filter(t=>t.due_date===today&&t.task_time).map(t=>({
+                  type:"task",key:"t"+t.id,title:t.title,start:toMins(t.task_time),end:toMins(t.task_time_end)||(toMins(t.task_time)+60),
+                  color:(PRIORITIES.find(p=>p.value===t.priority)||{color:"#8891B0"}).color,icon:"📋",time:t.task_time,timeEnd:t.task_time_end,raw:t
+                }))
+              ].sort((a,b)=>a.start-b.start);
+              if(!todayEvents.length) return null;
+              const nowMins = new Date().getHours()*60+new Date().getMinutes();
+              return (
+                <div style={{background:"#0A0C13",border:"1px solid rgba(10,132,255,.2)",borderRadius:14,padding:"14px 16px",marginBottom:16}}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+                    <div style={{fontSize:11,fontWeight:800,color:"#0A84FF",textTransform:"uppercase",letterSpacing:".7px"}}>📅 Agenda de hoy</div>
+                    <div style={{fontSize:10,color:"#4A5178",fontWeight:600}}>{new Date().toLocaleDateString("es-ES",{weekday:"long",day:"numeric",month:"short"})}</div>
+                  </div>
+                  <div style={{display:"flex",gap:6,overflowX:"auto",paddingBottom:4}}>
+                    {todayEvents.map(ev=>{
+                      const isPast = ev.end < nowMins;
+                      const isCurrent = ev.start<=nowMins && ev.end>nowMins;
+                      return (
+                        <div key={ev.key} onClick={()=>setCalSelectedItem({type:ev.type,...ev.raw})}
+                          style={{flexShrink:0,background:isCurrent?ev.color+"28":ev.color+"14",border:`1.5px solid ${isCurrent?ev.color:ev.color+"44"}`,borderRadius:10,padding:"8px 12px",cursor:"pointer",minWidth:130,opacity:isPast?.55:1,transition:"opacity .2s"}}>
+                          <div style={{fontSize:10,fontWeight:800,color:ev.color}}>{ev.icon} {ev.time}{ev.timeEnd?`–${ev.timeEnd}`:""}</div>
+                          <div style={{fontSize:12,fontWeight:700,color:"#F0F2FF",marginTop:2,lineHeight:1.2,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:140}}>{ev.title}</div>
+                          {isCurrent&&<div style={{fontSize:9,fontWeight:800,color:ev.color,marginTop:3}}>● EN CURSO</div>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Controls */}
             <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap",alignItems:"center"}}>
               <div className="font-display" style={{fontSize:18,color:"#F0F2FF",marginRight:"auto",letterSpacing:"-0.3px"}}>Tareas</div>
@@ -909,6 +967,46 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
               <button className="btn btn-glass" style={{fontSize:12}} onClick={exportPDF}>⎙ PDF</button>
               <button className="btn btn-red" onClick={()=>setShowNewTask(true)}>+ Tarea</button>
             </div>
+
+            {/* ── Horario de hoy ── */}
+            {(()=>{
+              const todayTasks = visibleTasks.filter(t=>t.due_date===today&&t.task_time).sort((a,b)=>a.task_time.localeCompare(b.task_time));
+              const todayMeets = meetings.filter(m=>m.date===today&&m.time).sort((a,b)=>a.time.localeCompare(b.time));
+              const all = [
+                ...todayTasks.map(t=>({key:"t-"+t.id,type:"task",time:t.task_time,timeEnd:t.task_time_end,title:t.title,raw:t})),
+                ...todayMeets.map(m=>({key:"m-"+m.id,type:"meeting",time:m.time,timeEnd:m.time_end,title:m.title,raw:m}))
+              ].sort((a,b)=>a.time.localeCompare(b.time));
+              if(all.length===0) return null;
+              return (
+                <div style={{background:"#0F1117",border:"1px solid #1E2130",borderRadius:14,padding:"14px 16px",marginBottom:18}}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+                    <div className="font-display" style={{fontSize:15,color:"#F0F2FF",letterSpacing:"-0.3px"}}>📅 Hoy · {new Date().toLocaleDateString("es-ES",{weekday:"long",day:"numeric",month:"long"})}</div>
+                    <button className="btn btn-glass" style={{fontSize:11,padding:"4px 10px"}} onClick={()=>{setView("calendario");setCalView("dia");setCalDate(new Date());}}>Ver día completo →</button>
+                  </div>
+                  <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                    {all.map(ev=>{
+                      const prio = ev.type==="task"?PRIORITIES.find(p=>p.value===ev.raw.priority):null;
+                      const mt   = ev.type==="meeting"?(MEET_TYPES[ev.raw.type]||MEET_TYPES.otro):null;
+                      const color= prio?.color||mt?.color||"#8891B0";
+                      const icon = mt?.icon||"📋";
+                      const assignees = ev.type==="task"?getAssignees(ev.raw).map(id=>getUser(id)).filter(Boolean):[];
+                      return (
+                        <div key={ev.key} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",background:"#161825",borderRadius:9,borderLeft:`3px solid ${color}`,cursor:"pointer"}}
+                          onClick={()=>{ if(ev.type==="task") setEditingTask(ev.raw); else setCalSelectedItem({type:"meeting",...ev.raw}); }}>
+                          <div style={{fontSize:10,fontWeight:800,color:color,minWidth:44,lineHeight:1.1}}>
+                            {ev.time}{ev.timeEnd?<><br/><span style={{color:"#4A5178"}}>–{ev.timeEnd}</span></>:""}
+                          </div>
+                          <span style={{fontSize:13}}>{icon}</span>
+                          <div style={{flex:1,fontSize:13,fontWeight:600,color:"#F0F2FF",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{ev.title}</div>
+                          {assignees.length>0&&<div style={{display:"flex",gap:2}}>{assignees.slice(0,3).map(u=><div key={u.id} className="avatar" style={{width:20,height:20,background:u.color+"22",color:u.color,fontSize:8}}>{u.avatar}</div>)}</div>}
+                          {ev.type==="task"&&<span style={{fontSize:10,fontWeight:700,color:ev.raw.status==="completado"?"#30D158":ev.raw.status==="en-proceso"?"#FF9500":"#8891B0"}}>{ev.raw.status}</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Task list */}
             {filteredTasks.length===0&&(
@@ -958,12 +1056,12 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
 
                       <div style={{display:"flex",gap:12,fontSize:11,color:"#4A5178",flexWrap:"wrap",fontWeight:600}}>
                         {task.start_date&&<span style={{color:"#30D158"}}>● {fmtShort(task.start_date)}</span>}
-                        {task.due_date&&<span style={{color:isOver?"#FF4D4D":"#4A5178"}}>◎ {fmtDate(task.due_date)}{task.task_time&&<span style={{color:"#8891B0"}}> {task.task_time}</span>}</span>}
+                        {task.due_date&&<span style={{color:isOver?"#FF4D4D":"#4A5178"}}>◎ {fmtDate(task.due_date)}{task.task_time&&<span style={{color:"#8891B0"}}> {task.task_time}{task.task_time_end&&`–${task.task_time_end}`}</span>}</span>}
                         {assigner&&<span>↑ <span style={{color:assigner.color}}>{assigner.role==="gerente"?"Gte":assigner.name.split(" ")[0]}</span></span>}
                         {assignees.length>0&&<span>→ {assignees.map((u,i)=><span key={u.id}>{i>0?", ":""}<span style={{color:u.color}}>{u.name.split(" ")[0]}</span></span>)}</span>}
                         {/* Conflict indicator on row */}
                         {task.task_time&&(()=>{
-                          const rowConflicts = detectConflicts({date:task.due_date,time:task.task_time,excludeId:task.id,excludeType:"task",userIds:getAssignees(task),tasks,meetings,users});
+                          const rowConflicts = detectConflicts({date:task.due_date,time:task.task_time,timeEnd:task.task_time_end,excludeId:task.id,excludeType:"task",userIds:getAssignees(task),tasks,meetings,users});
                           return rowConflicts.length>0?(
                             <span style={{color:"#FF9500",fontWeight:800,fontSize:10,background:"rgba(255,149,0,.1)",border:"1px solid rgba(255,149,0,.3)",borderRadius:4,padding:"1px 6px"}}>
                               ⚠ Conflicto
@@ -1039,6 +1137,11 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
             isTaskVisible={isTaskVisible} calDate={calDate} setCalDate={setCalDate}
             calView={calView} setCalView={setCalView}
             onItemClick={item=>setCalSelectedItem(item)}
+            onQuickCreate={(date, time) => {
+              setShowNewTask(true);
+              // We'll pass these as defaultDate/defaultTime via a state
+              setQuickCreateDefaults({date, time});
+            }}
           />
         )}
 
@@ -1071,12 +1174,12 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
                         {dl===0&&<span className="badge" style={{color:"#FF4D4D",background:"rgba(255,77,77,.1)",fontSize:10}}>HOY</span>}
                         {dl===1&&<span className="badge" style={{color:"#FF9500",background:"rgba(255,149,0,.1)",fontSize:10}}>Mañana</span>}
                         {(()=>{
-                          const mc=detectConflicts({date:m.date,time:m.time,excludeId:m.id,excludeType:"meeting",userIds:m.participants||[],tasks:visibleTasks,meetings,users});
+                          const mc=detectConflicts({date:m.date,time:m.time,timeEnd:m.time_end,excludeId:m.id,excludeType:"meeting",userIds:m.participants||[],tasks:visibleTasks,meetings,users});
                           return mc.length>0?<span style={{color:"#FF9500",fontWeight:800,fontSize:10,background:"rgba(255,149,0,.1)",border:"1px solid rgba(255,149,0,.3)",borderRadius:4,padding:"1px 6px"}}>⚠ {mc.length} conflicto{mc.length>1?"s":""}</span>:null;
                         })()}
                       </div>
                       <div style={{fontSize:11,color:"#4A5178",marginBottom:10,fontWeight:600}}>
-                        🕐 {m.time}{m.notes?` · ${m.notes}`:""}{creator?` · Por ${creator.role==="gerente"?"Gerente":creator.name.split(" ")[0]}`:""}</div>
+                        🕐 {m.time}{m.time_end`–${m.time_end}`:""}{m.notes?` · ${m.notes}`:""}{creator?` · Por ${creator.role==="gerente"?"Gerente":creator.name.split(" ")[0]}`:""}</div>
                       <div style={{display:"flex",gap:3,flexWrap:"wrap",alignItems:"center",marginBottom:8}}>
                         {(m.participants||[]).map(pid=>{const u=getUser(pid);return u?<div key={pid} className="avatar" style={{width:22,height:22,background:u.color+"22",color:u.color,fontSize:8,border:`1px solid ${u.color}33`}} title={u.name}>{u.avatar}</div>:null;})}
                         <span style={{fontSize:10,color:"#4A5178",fontWeight:600,paddingLeft:4}}>{(m.participants||[]).length} participantes</span>
@@ -1209,7 +1312,9 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
 
       {/* ── MODALES ── */}
       {showNewTask&&(
-        <TaskModal mode="create" roles={roles} currentUser={currentUser} users={users} tasks={tasks} meetings={meetings} carteras={carteras} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} onClose={()=>setShowNewTask(false)}
+        <TaskModal mode="create" roles={roles} currentUser={currentUser} users={users} tasks={tasks} meetings={meetings} carteras={carteras} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor}
+          defaultDate={quickCreateDefaults?.date} defaultTime={quickCreateDefaults?.time}
+          onClose={()=>{setShowNewTask(false);setQuickCreateDefaults(null);}}
           onSave={async form=>{
             const assignees = Array.isArray(form.assignedTo)?form.assignedTo:[form.assignedTo];
             if (assignees.length > 1) {
@@ -1218,7 +1323,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
               setSplitTasks({ baseForm: form, assignees });
               return;
             }
-            const data={title:form.title,description:form.description,assigned_to:assignees,assigned_by:currentUser.id,priority:form.priority,status:"pendiente",due_date:form.due_date,start_date:form.start_date||null,task_time:form.task_time||null,cartera:form.cartera,is_published:!isAdmin?true:(form.is_published??true),recurrence:form.recurrence||null,recurrence_days:form.recurrence_days||null,recurrence_end:form.recurrence_end||null,notify_before:form.notify_before||null};
+            const data={title:form.title,description:form.description,assigned_to:assignees,assigned_by:currentUser.id,priority:form.priority,status:"pendiente",due_date:form.due_date,start_date:form.start_date||null,task_time:form.task_time||null,task_time_end:form.task_time_end||null,cartera:form.cartera,is_published:!isAdmin?true:(form.is_published??true),recurrence:form.recurrence||null,recurrence_days:form.recurrence_days||null,recurrence_end:form.recurrence_end||null,notify_before:form.notify_before||null};
             const res=await db.insert("tasks",data);
             if(Array.isArray(res)&&res[0]){ setTasks(p=>[normalizeTask(res[0]),...p]); await logHistory(res[0].id,"created","",form.title); }
             setShowNewTask(false); showToast("Tarea creada ✓"); refreshTasks();
@@ -1230,7 +1335,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
         <TaskModal mode="edit" roles={roles} task={editingTask} currentUser={currentUser} users={users} tasks={tasks} meetings={meetings} carteras={carteras} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} onClose={()=>setEditingTask(null)}
           onSave={async form=>{
             const assignees = Array.isArray(form.assignedTo)?form.assignedTo:[form.assignedTo];
-            const data={title:form.title,description:form.description,assigned_to:assignees,priority:form.priority,due_date:form.due_date,start_date:form.start_date||null,task_time:form.task_time||null,cartera:form.cartera,recurrence:form.recurrence||null,recurrence_days:form.recurrence_days||null,recurrence_end:form.recurrence_end||null,notify_before:form.notify_before||null};
+            const data={title:form.title,description:form.description,assigned_to:assignees,priority:form.priority,due_date:form.due_date,start_date:form.start_date||null,task_time:form.task_time||null,task_time_end:form.task_time_end||null,cartera:form.cartera,recurrence:form.recurrence||null,recurrence_days:form.recurrence_days||null,recurrence_end:form.recurrence_end||null,notify_before:form.notify_before||null};
             await db.update("tasks",editingTask.id,data);
             await logHistory(editingTask.id,"edit","","Editada");
             setTasks(p=>p.map(t=>t.id===editingTask.id?normalizeTask({...t,...data}):t));
@@ -1284,13 +1389,13 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
             if (mode === "shared") {
               // One task for all
               const f = perPersonForms[0];
-              const data={title:f.title,description:f.description,assigned_to:splitTasks.assignees,assigned_by:currentUser.id,priority:f.priority,status:"pendiente",due_date:f.due_date,start_date:f.start_date||null,task_time:f.task_time||null,cartera:f.cartera,is_published:!isAdmin?true:true,recurrence:f.recurrence||null,recurrence_days:f.recurrence_days||null,recurrence_end:f.recurrence_end||null,notify_before:f.notify_before||null};
+              const data={title:f.title,description:f.description,assigned_to:splitTasks.assignees,assigned_by:currentUser.id,priority:f.priority,status:"pendiente",due_date:f.due_date,start_date:f.start_date||null,task_time:f.task_time||null,task_time_end:f.task_time_end||null,cartera:f.cartera,is_published:!isAdmin?true:true,recurrence:f.recurrence||null,recurrence_days:f.recurrence_days||null,recurrence_end:f.recurrence_end||null,notify_before:f.notify_before||null};
               const res=await db.insert("tasks",data);
               if(Array.isArray(res)&&res[0]){ setTasks(p=>[normalizeTask(res[0]),...p]); await logHistory(res[0].id,"created","",f.title); }
             } else {
               // Individual task per person
               for (const f of perPersonForms) {
-                const data={title:f.title,description:f.description,assigned_to:[f.userId],assigned_by:currentUser.id,priority:f.priority,status:"pendiente",due_date:f.due_date,start_date:f.start_date||null,task_time:f.task_time||null,cartera:f.cartera,is_published:!isAdmin?true:true,recurrence:null,recurrence_days:null,recurrence_end:null,notify_before:f.notify_before||null};
+                const data={title:f.title,description:f.description,assigned_to:[f.userId],assigned_by:currentUser.id,priority:f.priority,status:"pendiente",due_date:f.due_date,start_date:f.start_date||null,task_time:f.task_time||null,task_time_end:f.task_time_end||null,cartera:f.cartera,is_published:!isAdmin?true:true,recurrence:null,recurrence_days:null,recurrence_end:null,notify_before:f.notify_before||null};
                 const res=await db.insert("tasks",data);
                 if(Array.isArray(res)&&res[0]){ await logHistory(res[0].id,"created","",f.title); }
               }
@@ -1310,6 +1415,11 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
           onSave={async (data) => {
             await db.update("users", currentUser.id, data);
             await refreshUsers();
+            // Update currentUser in parent so header avatar refreshes immediately
+            const updated = { ...currentUser, ...data };
+            localStorage.setItem("ct_session", JSON.stringify(updated));
+            // Trigger re-render by firing a custom event the App component listens to
+            window.dispatchEvent(new CustomEvent("ct_profile_updated", { detail: updated }));
             setShowProfile(false);
             showToast("Perfil actualizado ✓");
           }}
@@ -1668,11 +1778,12 @@ function MetricasView({ tasks, meetings, users, getAssignees, getRoleLabel, getR
 // ══════════════════════════════════════════════════════════════════════════
 // CALENDAR VIEW
 // ══════════════════════════════════════════════════════════════════════════
-function CalendarView({ tasks, meetings, users, currentUser, calScope, setCalScope, calDate, setCalDate, calView, setCalView, onItemClick }) {
+function CalendarView({ tasks, meetings, users, currentUser, calScope, setCalScope, calDate, setCalDate, calView, setCalView, onItemClick, onQuickCreate }) {
   const year     = calDate.getFullYear();
   const month    = calDate.getMonth();
   const today    = todayStr();
   const getUser  = id => users.find(u=>u.id===id);
+  const getAssignees = task => Array.isArray(task.assigned_to)?task.assigned_to:(task.assigned_to?[task.assigned_to]:[]);
   const [selectedDay, setSelectedDay] = useState(null);
 
   // Filter by scope
@@ -1801,26 +1912,80 @@ function CalendarView({ tasks, meetings, users, currentUser, calScope, setCalSco
     const startOfWeek = new Date(calDate);
     startOfWeek.setDate(calDate.getDate()-calDate.getDay());
     const days = Array.from({length:7},(_,i)=>{ const d=new Date(startOfWeek); d.setDate(startOfWeek.getDate()+i); return d; });
+    const HOURS = Array.from({length:14},(_,i)=>i+7);
+    const toMins = t => { if(!t) return null; const [h,m]=t.split(":").map(Number); return h*60+m; };
+    const START=7*60, TOTAL=14*60;
+    const nowMins = new Date().getHours()*60+new Date().getMinutes();
     return (
-      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:6}}>
+      <div style={{display:"flex",gap:0,overflowX:"auto"}}>
+        {/* Hour labels */}
+        <div style={{width:36,flexShrink:0,paddingTop:32}}>
+          {HOURS.map(h=>(
+            <div key={h} style={{height:56,display:"flex",alignItems:"flex-start",paddingTop:2}}>
+              <span style={{fontSize:9,fontWeight:700,color:"#4A5178"}}>{h}:00</span>
+            </div>
+          ))}
+        </div>
+        {/* Day columns */}
         {days.map((d,i)=>{
-          const ds       = d.toISOString().split("T")[0];
-          const dayTasks = filteredTasks.filter(t=>t.due_date===ds);
-          const dayMeets = filteredMeetings.filter(m=>m.date===ds);
-          const isToday  = ds===today;
+          const ds = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+          const isToday = ds===today;
+          const events = [
+            ...filteredMeetings.filter(m=>m.date===ds&&m.time).map(m=>({
+              id:"m-"+m.id, type:"meeting", title:m.title,
+              start:toMins(m.time), end:toMins(m.time_end)||(toMins(m.time)+60),
+              color:(MEET_TYPES[m.type]||MEET_TYPES.otro).color,
+              icon:(MEET_TYPES[m.type]||MEET_TYPES.otro).icon, raw:m
+            })),
+            ...filteredTasks.filter(t=>t.due_date===ds&&t.task_time).map(t=>({
+              id:"t-"+t.id, type:"task", title:t.title,
+              start:toMins(t.task_time), end:toMins(t.task_time_end)||(toMins(t.task_time)+60),
+              color:(PRIORITIES.find(p=>p.value===t.priority)||{color:"#8891B0"}).color,
+              icon:"📋", raw:t
+            }))
+          ];
           return (
-            <div key={i} style={{background:isToday?"rgba(255,77,77,.04)":"#0F1117",border:`1px solid ${isToday?"rgba(255,77,77,.3)":"#1E2130"}`,borderRadius:12,padding:10,minHeight:200}}>
-              <div style={{fontSize:11,fontWeight:700,color:"#4A5178",marginBottom:2}}>{WEEKDAYS[d.getDay()]}</div>
-              <div className="font-display" style={{fontSize:22,color:isToday?"#FF4D4D":"#F0F2FF",marginBottom:8,lineHeight:1}}>{d.getDate()}</div>
-              {dayTasks.map(t=>{
-                const prio=PRIORITIES.find(p=>p.value===t.priority);
-                const u=getUser(t.assigned_to);
-                return <div key={t.id} style={{background:prio?prio.bg:"#1E2130",color:prio?prio.color:"#8891B0",borderRadius:6,padding:"5px 7px",marginBottom:4,fontSize:11,fontWeight:600}}>{u?.avatar} {t.title}</div>;
-              })}
-              {dayMeets.map(m=>{
-                const mt=MEET_TYPES[m.type]||MEET_TYPES.otro;
-                return <div key={m.id} style={{background:mt.color+"18",color:mt.color,borderRadius:6,padding:"5px 7px",marginBottom:4,fontSize:11,fontWeight:600}}>{mt.icon} {m.time} {m.title}</div>;
-              })}
+            <div key={i} style={{flex:1,minWidth:90,borderLeft:"1px solid #1E2130"}}>
+              {/* Day header */}
+              <div style={{textAlign:"center",padding:"6px 4px 8px",borderBottom:"1px solid #1E2130",background:isToday?"rgba(255,77,77,.05)":"transparent",cursor:"pointer"}}
+                onClick={()=>{setCalDate(d);setCalView("dia");}}>
+                <div style={{fontSize:9,fontWeight:700,color:isToday?"#FF4D4D":"#4A5178",textTransform:"uppercase"}}>{WEEKDAYS[d.getDay()]}</div>
+                <div className="font-display" style={{fontSize:18,color:isToday?"#FF4D4D":"#F0F2FF",lineHeight:1.1}}>{d.getDate()}</div>
+              </div>
+              {/* Time column */}
+              <div style={{position:"relative"}}>
+                {HOURS.map(h=>(
+                  <div key={h} style={{height:56,borderTop:"1px solid #1E213044",cursor:"pointer"}}
+                    onClick={()=>{setCalDate(d);setCalView("dia");onQuickCreate(ds,`${String(h).padStart(2,"0")}:00`);}}/>
+                ))}
+                {/* Now line */}
+                {isToday&&nowMins>=START&&nowMins<START+TOTAL&&(
+                  <div style={{position:"absolute",left:0,right:0,top:`${((nowMins-START)/TOTAL)*100}%`,zIndex:10,pointerEvents:"none"}}>
+                    <div style={{height:2,background:"#FF4D4D",opacity:.8}}/>
+                  </div>
+                )}
+                {events.map(ev=>{
+                  const cs=Math.max(ev.start,START), ce=Math.min(ev.end,START+TOTAL);
+                  if(ce<=cs) return null;
+                  return (
+                    <div key={ev.id} onClick={e=>{e.stopPropagation();onItemClick({type:ev.type,...ev.raw});}}
+                      style={{
+                        position:"absolute",left:2,right:2,
+                        top:`${((cs-START)/TOTAL)*100}%`,
+                        height:`${Math.max(((ce-cs)/TOTAL)*100,2)}%`,
+                        background:ev.color+"22",border:`1.5px solid ${ev.color}55`,
+                        borderLeft:`3px solid ${ev.color}`,
+                        borderRadius:5,padding:"3px 5px",cursor:"pointer",overflow:"hidden",zIndex:5
+                      }}
+                      onMouseEnter={e=>e.currentTarget.style.filter="brightness(1.4)"}
+                      onMouseLeave={e=>e.currentTarget.style.filter=""}>
+                      <div style={{fontSize:9,fontWeight:700,color:"#F0F2FF",lineHeight:1.2,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                        {ev.icon} {ev.title}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           );
         })}
@@ -1829,44 +1994,129 @@ function CalendarView({ tasks, meetings, users, currentUser, calScope, setCalSco
   };
 
   // ── DÍA ──
-  const renderDay = () => {
-    const ds       = calDate.toISOString().split("T")[0];
-    const dayTasks = filteredTasks.filter(t=>t.due_date===ds);
-    const dayMeets = filteredMeetings.filter(m=>m.date===ds).sort((a,b)=>a.time.localeCompare(b.time));
-    const isToday  = ds===today;
+  const renderDay = (dsOverride) => {
+    const ds = dsOverride || `${calDate.getFullYear()}-${String(calDate.getMonth()+1).padStart(2,"0")}-${String(calDate.getDate()).padStart(2,"0")}`;
+    const isToday = ds === today;
+    const toMins = t => { if(!t) return null; const [h,m]=t.split(":").map(Number); return h*60+m; };
+    const HOUR_START = 7, HOUR_END = 21, TOTAL_HOURS = HOUR_END - HOUR_START;
+    const PX_PER_HOUR = 64;
+    const TOTAL_PX = TOTAL_HOURS * PX_PER_HOUR;
+
+    // Gather events
+    const events = [
+      ...filteredTasks.filter(t=>t.due_date===ds && t.task_time).map(t=>({
+        id:"t"+t.id, type:"task", title:t.title,
+        start: toMins(t.task_time),
+        end:   toMins(t.task_time_end) || toMins(t.task_time)+60,
+        color: PRIORITIES.find(p=>p.value===t.priority)?.color||"#8891B0",
+        bg:    PRIORITIES.find(p=>p.value===t.priority)?.bg||"#1E2130",
+        sub:   t.status, item: t,
+        assignees: (Array.isArray(t.assigned_to)?t.assigned_to:[t.assigned_to]).map(id=>users.find(u=>u.id===id||u.id===Number(id))).filter(Boolean),
+      })),
+      ...filteredMeetings.filter(m=>m.date===ds && m.time).map(m=>({
+        id:"m"+m.id, type:"meeting", title:m.title,
+        start: toMins(m.time),
+        end:   toMins(m.time_end) || toMins(m.time)+60,
+        color: (MEET_TYPES[m.type]||MEET_TYPES.otro).color,
+        bg:    (MEET_TYPES[m.type]||MEET_TYPES.otro).color+"18",
+        sub:   (MEET_TYPES[m.type]||MEET_TYPES.otro).label,
+        icon:  (MEET_TYPES[m.type]||MEET_TYPES.otro).icon, item: m,
+        assignees: (m.participants||[]).map(id=>users.find(u=>u.id===id||u.id===Number(id))).filter(Boolean),
+      })),
+    ].filter(e => e.start !== null);
+
+    // Events without time — show as list below
+    const untimedTasks = filteredTasks.filter(t=>t.due_date===ds && !t.task_time);
+
+    // Current time indicator
+    const now = new Date();
+    const nowMins = now.getHours()*60+now.getMinutes();
+    const nowPx = isToday ? ((nowMins - HOUR_START*60) / 60) * PX_PER_HOUR : null;
+
+    const topPx  = e => Math.max(0, ((e.start - HOUR_START*60)/60)*PX_PER_HOUR);
+    const heightPx = e => Math.max(28, ((Math.min(e.end,HOUR_END*60)-Math.max(e.start,HOUR_START*60))/60)*PX_PER_HOUR - 2);
+
     return (
-      <div style={{maxWidth:600,margin:"0 auto"}}>
-        <div style={{background:"#0F1117",border:`1px solid ${isToday?"rgba(255,77,77,.3)":"#1E2130"}`,borderRadius:16,padding:24,marginBottom:16}}>
-          <div className="font-display" style={{fontSize:28,color:isToday?"#FF4D4D":"#F0F2FF",letterSpacing:"-1px"}}>{calDate.toLocaleDateString("es-ES",{weekday:"long",day:"numeric",month:"long"})}</div>
-          {isToday&&<span className="badge" style={{color:"#FF4D4D",background:"rgba(255,77,77,.1)",marginTop:4}}>Hoy</span>}
+      <div style={{display:"flex",gap:16}}>
+        {/* Time grid */}
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{position:"relative",height:TOTAL_PX}}>
+            {/* Hour lines */}
+            {Array.from({length:TOTAL_HOURS+1},(_,i)=>{
+              const h = HOUR_START+i;
+              return (
+                <div key={h} style={{position:"absolute",top:i*PX_PER_HOUR,left:0,right:0,display:"flex",alignItems:"flex-start",gap:8}}>
+                  <span style={{fontSize:10,fontWeight:700,color:"#4A5178",width:36,flexShrink:0,lineHeight:"1",marginTop:-5}}>{h<10?`0${h}:00`:`${h}:00`}</span>
+                  <div style={{flex:1,borderTop:"1px solid #1E2130",marginTop:0}}/>
+                </div>
+              );
+            })}
+
+            {/* Current time line */}
+            {nowPx!==null && nowPx>=0 && nowPx<=TOTAL_PX && (
+              <div style={{position:"absolute",top:nowPx,left:44,right:0,height:2,background:"#FF4D4D",zIndex:10,borderRadius:1}}>
+                <div style={{position:"absolute",left:-6,top:-4,width:10,height:10,background:"#FF4D4D",borderRadius:"50%"}}/>
+              </div>
+            )}
+
+            {/* Events */}
+            <div style={{position:"absolute",top:0,left:44,right:0,bottom:0}}>
+              {events.map(e=>(
+                <div key={e.id}
+                  onClick={()=>onItemClick({type:e.type==="task"?"task":"meeting",...e.item})}
+                  style={{position:"absolute",top:topPx(e),height:heightPx(e),left:2,right:2,
+                    background:e.bg, border:`1.5px solid ${e.color}66`, borderLeft:`3px solid ${e.color}`,
+                    borderRadius:8, padding:"4px 8px", cursor:"pointer", overflow:"hidden",
+                    boxSizing:"border-box", zIndex:5,
+                    transition:"transform .1s"}}
+                  onMouseEnter={el=>el.currentTarget.style.transform="scale(1.01)"}
+                  onMouseLeave={el=>el.currentTarget.style.transform="scale(1)"}
+                >
+                  <div style={{fontSize:11,fontWeight:800,color:e.color,lineHeight:1.2,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                    {e.icon&&<span style={{marginRight:4}}>{e.icon}</span>}{e.title}
+                  </div>
+                  <div style={{fontSize:9,color:e.color,opacity:.7,fontWeight:600,marginTop:1}}>
+                    {`${String(Math.floor(e.start/60)).padStart(2,"0")}:${String(e.start%60).padStart(2,"0")} – ${String(Math.floor(e.end/60)).padStart(2,"0")}:${String(e.end%60).padStart(2,"0")}`}
+                  </div>
+                  {e.assignees.length>0&&heightPx(e)>44&&(
+                    <div style={{display:"flex",gap:2,marginTop:4,flexWrap:"wrap"}}>
+                      {e.assignees.slice(0,4).map(u=><div key={u.id} className="avatar" style={{width:16,height:16,background:u.color+"22",color:u.color,fontSize:6,border:`1px solid ${u.color}33`}}>{u.avatar}</div>)}
+                    </div>
+                  )}
+                </div>
+              ))}
+
+              {/* Click to create — overlay slots */}
+              {Array.from({length:TOTAL_HOURS*2},(_,i)=>{
+                const slotMins = HOUR_START*60 + i*30;
+                const h = Math.floor(slotMins/60), m = slotMins%60;
+                const timeStr = `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`;
+                return (
+                  <div key={i} style={{position:"absolute",top:(i*PX_PER_HOUR/2),left:0,right:0,height:PX_PER_HOUR/2,zIndex:3,cursor:"pointer"}}
+                    onClick={()=>onQuickCreate(ds, timeStr)}
+                    title={`+ Tarea a las ${timeStr}`}
+                  />
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Untimed tasks */}
+          {untimedTasks.length>0&&(
+            <div style={{marginTop:20}}>
+              <div style={{fontSize:10,fontWeight:800,color:"#4A5178",textTransform:"uppercase",letterSpacing:".6px",marginBottom:8}}>Sin hora asignada</div>
+              {untimedTasks.map(t=>{
+                const prio=PRIORITIES.find(p=>p.value===t.priority);
+                const assignees=(Array.isArray(t.assigned_to)?t.assigned_to:[t.assigned_to]).map(id=>users.find(u=>u.id===id||u.id===Number(id))).filter(Boolean);
+                return <div key={t.id} onClick={()=>onItemClick({type:"task",...t})} style={{background:"#0F1117",border:`1px solid ${prio?prio.color+"33":"#1E2130"}`,borderRadius:8,padding:"8px 12px",marginBottom:4,display:"flex",gap:8,alignItems:"center",cursor:"pointer"}}>
+                  {assignees.slice(0,2).map(u=><div key={u.id} className="avatar" style={{width:22,height:22,background:u.color+"22",color:u.color,fontSize:8}}>{u.avatar}</div>)}
+                  <span style={{flex:1,fontSize:12,fontWeight:700}}>{t.title}</span>
+                  {prio&&<span className="badge" style={{color:prio.color,background:prio.bg,fontSize:10}}>{prio.label}</span>}
+                </div>;
+              })}
+            </div>
+          )}
         </div>
-        {dayMeets.length>0&&(
-          <div style={{marginBottom:16}}>
-            <div style={{fontSize:11,fontWeight:700,color:"#4A5178",textTransform:"uppercase",letterSpacing:".6px",marginBottom:8}}>Reuniones</div>
-            {dayMeets.map(m=>{
-              const mt=MEET_TYPES[m.type]||MEET_TYPES.otro;
-              return <div key={m.id} style={{background:"#0F1117",border:`1px solid ${mt.color}33`,borderRadius:10,padding:"12px 14px",marginBottom:6,display:"flex",gap:10,alignItems:"center"}}>
-                <span style={{fontSize:18}}>{mt.icon}</span>
-                <div><div style={{fontWeight:700,fontSize:13}}>{m.title}</div><div style={{fontSize:11,color:"#4A5178",fontWeight:600}}>🕐 {m.time}</div></div>
-              </div>;
-            })}
-          </div>
-        )}
-        {dayTasks.length>0&&(
-          <div>
-            <div style={{fontSize:11,fontWeight:700,color:"#4A5178",textTransform:"uppercase",letterSpacing:".6px",marginBottom:8}}>Tareas vencen hoy</div>
-            {dayTasks.map(t=>{
-              const prio=PRIORITIES.find(p=>p.value===t.priority);
-              const u=getUser(t.assigned_to);
-              return <div key={t.id} style={{background:"#0F1117",border:`1px solid ${prio?prio.color+"33":"#1E2130"}`,borderRadius:10,padding:"12px 14px",marginBottom:6,display:"flex",gap:10,alignItems:"center"}}>
-                {u&&<div className="avatar" style={{width:30,height:30,background:u.color+"22",color:u.color,fontSize:10}}>{u.avatar}</div>}
-                <div style={{flex:1}}><div style={{fontWeight:700,fontSize:13}}>{t.title}</div><div style={{fontSize:11,color:prio?.color||"#4A5178",fontWeight:700}}>{prio?.label}</div></div>
-                <span style={{fontSize:11,fontWeight:800,color:t.status==="completado"?"#30D158":t.status==="en-proceso"?"#FF9500":"#8891B0",background:t.status==="completado"?"rgba(48,209,88,.1)":t.status==="en-proceso"?"rgba(255,149,0,.1)":"rgba(136,145,176,.08)",padding:"3px 9px",borderRadius:5}}>{t.status}</span>
-              </div>;
-            })}
-          </div>
-        )}
-        {dayTasks.length===0&&dayMeets.length===0&&<div style={{textAlign:"center",color:"#4A5178",padding:"40px 0",fontSize:13,fontWeight:600}}>📭 Sin eventos este día</div>}
       </div>
     );
   };
@@ -1885,7 +2135,7 @@ function CalendarView({ tasks, meetings, users, currentUser, calScope, setCalSco
     return upcoming.map(({date,ds,dayTasks,dayMeets})=>(
       <div key={ds} style={{marginBottom:16}}>
         <div style={{fontSize:12,fontWeight:800,color:"#4A5178",textTransform:"uppercase",letterSpacing:".6px",marginBottom:6,paddingLeft:4}}>{date.toLocaleDateString("es-ES",{weekday:"long",day:"numeric",month:"long"})}{ds===today&&<span className="badge" style={{color:"#FF4D4D",background:"rgba(255,77,77,.1)",marginLeft:8,fontSize:9}}>HOY</span>}</div>
-        {dayMeets.map(m=>{const mt=MEET_TYPES[m.type]||MEET_TYPES.otro;return <div key={m.id} onClick={()=>onItemClick({type:"meeting",...m})} style={{background:"#0F1117",border:`1px solid ${mt.color}33`,borderRadius:10,padding:"10px 14px",marginBottom:4,display:"flex",gap:10,alignItems:"center",cursor:"pointer"}}><span>{mt.icon}</span><div><span style={{fontWeight:700,fontSize:13}}>{m.title}</span><span style={{fontSize:11,color:"#4A5178",fontWeight:600,marginLeft:8}}>🕐 {m.time}</span></div></div>;})}
+        {dayMeets.map(m=>{const mt=MEET_TYPES[m.type]||MEET_TYPES.otro;return <div key={m.id} onClick={()=>onItemClick({type:"meeting",...m})} style={{background:"#0F1117",border:`1px solid ${mt.color}33`,borderRadius:10,padding:"10px 14px",marginBottom:4,display:"flex",gap:10,alignItems:"center",cursor:"pointer"}}><span>{mt.icon}</span><div><span style={{fontWeight:700,fontSize:13}}>{m.title}</span><span style={{fontSize:11,color:"#4A5178",fontWeight:600,marginLeft:8}}>🕐 {m.time}{m.time_end?`–${m.time_end}`:""}</span></div></div>;})}
         {dayTasks.map(t=>{const prio=PRIORITIES.find(p=>p.value===t.priority);const assignees=(Array.isArray(t.assigned_to)?t.assigned_to:[t.assigned_to]).map(id=>users.find(u=>u.id===id)).filter(Boolean);return <div key={t.id} onClick={()=>onItemClick({type:"task",...t})} style={{background:"#0F1117",border:`1px solid ${prio?prio.color+"22":"#1E2130"}`,borderRadius:10,padding:"10px 14px",marginBottom:4,display:"flex",gap:8,alignItems:"center",cursor:"pointer"}}>{assignees.slice(0,2).map(u=><div key={u.id} className="avatar" style={{width:24,height:24,background:u.color+"22",color:u.color,fontSize:8}}>{u.avatar}</div>)}<span style={{fontWeight:600,fontSize:13,flex:1}}>{t.title}</span>{prio&&<span className="badge" style={{color:prio.color,background:prio.bg,fontSize:10}}>{prio.label}</span>}</div>;})}
       </div>
     ));
@@ -1942,19 +2192,20 @@ function CalendarView({ tasks, meetings, users, currentUser, calScope, setCalSco
 // ══════════════════════════════════════════════════════════════════════════
 // TASK MODAL — with task_time + live conflict detection
 // ══════════════════════════════════════════════════════════════════════════
-function TaskModal({ mode, task, currentUser, roles, users, tasks, meetings, carteras, getRoleLabel, getRoleColor, onClose, onSave }) {
+function TaskModal({ mode, task, currentUser, roles, users, tasks, meetings, carteras, getRoleLabel, getRoleColor, onClose, onSave, defaultDate, defaultTime }) {
   const init = task ? {
     title:task.title||"", description:task.description||"",
     assignedTo: Array.isArray(task.assigned_to) ? task.assigned_to : (task.assigned_to ? [task.assigned_to] : []),
     priority:task.priority||"media",
     due_date:task.due_date||"", start_date:task.start_date||"",
     task_time:task.task_time||"",
+    task_time_end:task.task_time_end||"",
     cartera:task.cartera||carteras[0]||"", is_published:task.is_published??true,
     recurrence:task.recurrence||"", recurrence_days:task.recurrence_days||[], recurrence_end:task.recurrence_end||"",
     notify_before:task.notify_before||""
   } : {
-    title:"", description:"", assignedTo:[], priority:"media",
-    due_date:"", start_date:"", task_time:"", cartera:carteras[0]||"", is_published:true,
+    title:"", description:"", assignedTo:[currentUser.id], priority:"media",
+    due_date:defaultDate||"", start_date:"", task_time:defaultTime||"", task_time_end:"", cartera:carteras[0]||"", is_published:true,
     recurrence:"", recurrence_days:[], recurrence_end:"", notify_before:""
   };
   const [form,      setForm]      = useState(init);
@@ -1968,6 +2219,7 @@ function TaskModal({ mode, task, currentUser, roles, users, tasks, meetings, car
     const found = detectConflicts({
       date: form.due_date,
       time: form.task_time,
+      timeEnd: form.task_time_end || null,
       excludeId: task?.id,
       excludeType: "task",
       userIds: form.assignedTo,
@@ -1976,7 +2228,7 @@ function TaskModal({ mode, task, currentUser, roles, users, tasks, meetings, car
       users
     });
     setConflicts(found);
-  }, [form.due_date, form.task_time, JSON.stringify(form.assignedTo)]);
+  }, [form.due_date, form.task_time, form.task_time_end, JSON.stringify(form.assignedTo)]);
 
   const toggleA = id => setForm(f=>({...f,assignedTo:f.assignedTo.includes(id)?f.assignedTo.filter(x=>x!==id):[...f.assignedTo,id]}));
   const toggleD = d => setForm(f=>({...f,recurrence_days:f.recurrence_days.includes(d)?f.recurrence_days.filter(x=>x!==d):[...f.recurrence_days,d]}));
@@ -1984,8 +2236,10 @@ function TaskModal({ mode, task, currentUser, roles, users, tasks, meetings, car
   const handleSave = () => {
     if (!form.title.trim() || !form.due_date) { alert("Completa título y fecha límite"); return; }
     if (mode==="create" && form.assignedTo.length===0) { alert("Selecciona al menos un responsable"); return; }
-    if (conflicts.length > 0 && !isGerente) {
-      alert(`Hay ${conflicts.length} conflicto${conflicts.length>1?"s":""} de agenda. Cambia la fecha u hora antes de guardar.`); return;
+    // Allow if gerente OR if all conflicts are only with the current user themselves
+    const othersConflict = conflicts.filter(c => String(c.userId) !== String(currentUser.id));
+    if (othersConflict.length > 0 && !isGerente) {
+      alert(`Hay ${othersConflict.length} conflicto${othersConflict.length>1?"s":""} de agenda con otras personas. Cambia la fecha u hora antes de guardar.`); return;
     }
     onSave(form);
   };
@@ -2025,8 +2279,11 @@ function TaskModal({ mode, task, currentUser, roles, users, tasks, meetings, car
 
           {/* HORA — triggers conflict check */}
           <div>
-            <label className="label">Hora de la tarea <span style={{color:"#4A5178",fontWeight:400,textTransform:"none",letterSpacing:0}}>(opcional — para detectar conflictos)</span></label>
-            <input type="time" className="input" value={form.task_time} onChange={e=>setForm({...form,task_time:e.target.value})} />
+            <label className="label">Hora <span style={{color:"#4A5178",fontWeight:400,textTransform:"none",letterSpacing:0}}>(opcional — para detectar conflictos)</span></label>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              <div><label className="label" style={{fontSize:9}}>Inicio</label><input type="time" className="input" value={form.task_time} onChange={e=>setForm({...form,task_time:e.target.value})} /></div>
+              <div><label className="label" style={{fontSize:9}}>Fin</label><input type="time" className="input" value={form.task_time_end} onChange={e=>setForm({...form,task_time_end:e.target.value})} /></div>
+            </div>
           </div>
 
           {/* CONFLICT BANNER — shown live */}
@@ -2107,15 +2364,19 @@ function TaskModal({ mode, task, currentUser, roles, users, tasks, meetings, car
 
           <div style={{display:"flex",gap:8,marginTop:4}}>
             <button className="btn btn-glass" style={{flex:1,justifyContent:"center"}} onClick={onClose}>Cancelar</button>
-            <button className="btn btn-red" style={{flex:2,justifyContent:"center",position:"relative",
-              opacity:(conflicts.length>0&&!isGerente)?0.45:1,
-              cursor:(conflicts.length>0&&!isGerente)?"not-allowed":"pointer"}} onClick={handleSave}>
-              {conflicts.length>0&&!isGerente&&<span style={{position:"absolute",top:-6,right:-6,background:"#FF4D4D",color:"#fff",borderRadius:"50%",width:16,height:16,fontSize:9,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center"}}>✕</span>}
-              {conflicts.length>0&&isGerente&&<span style={{position:"absolute",top:-6,right:-6,background:"#FF9500",color:"#000",borderRadius:"50%",width:16,height:16,fontSize:9,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center"}}>!</span>}
-              {conflicts.length>0 && !isGerente ? "⚠ Conflicto — no se puede guardar"
-                : conflicts.length>0 && isGerente ? "⚠ Guardar igual (Gerente) ✓"
-                : mode==="edit" ? "Guardar ✓" : "Crear ✓"}
-            </button>
+            {(()=>{
+              const othersConflict = conflicts.filter(c=>String(c.userId)!==String(currentUser.id));
+              const blocked = othersConflict.length>0 && !isGerente;
+              return (
+                <button className="btn btn-red" style={{flex:2,justifyContent:"center",position:"relative",opacity:blocked?0.45:1,cursor:blocked?"not-allowed":"pointer"}} onClick={handleSave}>
+                  {blocked&&<span style={{position:"absolute",top:-6,right:-6,background:"#FF4D4D",color:"#fff",borderRadius:"50%",width:16,height:16,fontSize:9,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center"}}>✕</span>}
+                  {!blocked&&othersConflict.length>0&&isGerente&&<span style={{position:"absolute",top:-6,right:-6,background:"#FF9500",color:"#000",borderRadius:"50%",width:16,height:16,fontSize:9,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center"}}>!</span>}
+                  {blocked ? "⚠ Conflicto — no se puede guardar"
+                    : othersConflict.length>0&&isGerente ? "⚠ Guardar igual (Gerente) ✓"
+                    : mode==="edit" ? "Guardar ✓" : "Crear ✓"}
+                </button>
+              );
+            })()}
           </div>
         </div>
       </div>
@@ -2404,11 +2665,11 @@ function ManageUsers({ users, onRefresh, showToast, roles, saveRoles, carteras, 
 function NewMeetingModal({ currentUser, roles, users, tasks, meetings, editingMeeting, getRoleLabel, getRoleColor, onClose, onSave }) {
   const isGerente = roles?.find(r => r.key === currentUser.role)?.admin === true || currentUser.is_admin === true;
   const init = editingMeeting ? {
-    title:editingMeeting.title||"", date:editingMeeting.date||"", time:editingMeeting.time||"",
+    title:editingMeeting.title||"", date:editingMeeting.date||"", time:editingMeeting.time||"", time_end:editingMeeting.time_end||"",
     type:editingMeeting.type||"seguimiento", notes:editingMeeting.notes||"",
     participants:editingMeeting.participants||[currentUser.id], notify_before:editingMeeting.notify_before||[],
     recurrence:editingMeeting.recurrence||"", recurrence_days:editingMeeting.recurrence_days||[], recurrence_end:editingMeeting.recurrence_end||""
-  } : {title:"",date:"",time:"",type:"seguimiento",notes:"",participants:[currentUser.id],notify_before:[],
+  } : {title:"",date:"",time:"",time_end:"",type:"seguimiento",notes:"",participants:[currentUser.id],notify_before:[],
     recurrence:"", recurrence_days:[], recurrence_end:""
   };
 
@@ -2425,6 +2686,7 @@ function NewMeetingModal({ currentUser, roles, users, tasks, meetings, editingMe
     const found = detectConflicts({
       date: form.date,
       time: form.time,
+      timeEnd: form.time_end || null,
       excludeId: editingMeeting?.id,
       excludeType: "meeting",
       userIds: form.participants,
@@ -2433,7 +2695,7 @@ function NewMeetingModal({ currentUser, roles, users, tasks, meetings, editingMe
       users
     });
     setConflicts(found);
-  }, [form.date, form.time, form.participants]);
+  }, [form.date, form.time, form.time_end, form.participants]);
 
   return (
     <div className="modal-overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
@@ -2441,9 +2703,10 @@ function NewMeetingModal({ currentUser, roles, users, tasks, meetings, editingMe
         <div className="font-display" style={{fontSize:17,marginBottom:18}}>+ Nueva Reunión</div>
         <div style={{display:"flex",flexDirection:"column",gap:12}}>
           <div><label className="label">Título *</label><input className="input" placeholder="¿De qué trata?" value={form.title} onChange={e=>setForm({...form,title:e.target.value})} /></div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
             <div><label className="label">Fecha *</label><input type="date" className="input" value={form.date} onChange={e=>setForm({...form,date:e.target.value})} /></div>
-            <div><label className="label">Hora *</label><input type="time" className="input" value={form.time} onChange={e=>setForm({...form,time:e.target.value})} /></div>
+            <div><label className="label">Inicio *</label><input type="time" className="input" value={form.time} onChange={e=>setForm({...form,time:e.target.value})} /></div>
+            <div><label className="label">Fin</label><input type="time" className="input" value={form.time_end||""} onChange={e=>setForm({...form,time_end:e.target.value})} /></div>
           </div>
           <div><label className="label">Tipo</label><select className="input" value={form.type} onChange={e=>setForm({...form,type:e.target.value})}>{Object.entries(MEET_TYPES).map(([k,v])=><option key={k} value={k}>{v.icon} {v.label}</option>)}</select></div>
           <div><label className="label">Agenda</label><textarea className="input" rows={2} placeholder="Puntos a tratar..." value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})} style={{resize:"vertical"}} /></div>
@@ -2528,20 +2791,24 @@ function NewMeetingModal({ currentUser, roles, users, tasks, meetings, editingMe
           </div>
           <div style={{display:"flex",gap:8}}>
             <button className="btn btn-glass" style={{flex:1,justifyContent:"center"}} onClick={onClose}>Cancelar</button>
-            <button className="btn btn-red" style={{flex:2,justifyContent:"center",position:"relative",
-              opacity:(conflicts.length>0&&!isGerente)?0.45:1,
-              cursor:(conflicts.length>0&&!isGerente)?"not-allowed":"pointer"}}
-              onClick={()=>{
-                if(!form.title.trim()||!form.date||!form.time){alert("Completa los campos requeridos");return;}
-                if(conflicts.length>0&&!isGerente){alert(`Hay ${conflicts.length} conflicto${conflicts.length>1?"s":""} de agenda. Cambia la fecha u hora antes de agendar.`);return;}
-                onSave(form);
-              }}>
-              {conflicts.length>0&&!isGerente&&<span style={{position:"absolute",top:-6,right:-6,background:"#FF4D4D",color:"#fff",borderRadius:"50%",width:16,height:16,fontSize:9,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center"}}>✕</span>}
-              {conflicts.length>0&&isGerente&&<span style={{position:"absolute",top:-6,right:-6,background:"#FF9500",color:"#000",borderRadius:"50%",width:16,height:16,fontSize:9,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center"}}>!</span>}
-              {conflicts.length>0 && !isGerente ? "⚠ Conflicto — no se puede agendar"
-                : conflicts.length>0 && isGerente ? "⚠ Agendar igual (Gerente) ✓"
-                : "Agendar ✓"}
-            </button>
+            {(()=>{
+              const othersConflict = conflicts.filter(c=>String(c.userId)!==String(currentUser.id));
+              const blocked = othersConflict.length>0 && !isGerente;
+              return (
+                <button className="btn btn-red" style={{flex:2,justifyContent:"center",position:"relative",opacity:blocked?0.45:1,cursor:blocked?"not-allowed":"pointer"}}
+                  onClick={()=>{
+                    if(!form.title.trim()||!form.date||!form.time){alert("Completa los campos requeridos");return;}
+                    if(blocked){alert(`Hay ${othersConflict.length} conflicto${othersConflict.length>1?"s":""} de agenda con otras personas. Cambia la fecha u hora antes de agendar.`);return;}
+                    onSave(form);
+                  }}>
+                  {blocked&&<span style={{position:"absolute",top:-6,right:-6,background:"#FF4D4D",color:"#fff",borderRadius:"50%",width:16,height:16,fontSize:9,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center"}}>✕</span>}
+                  {!blocked&&othersConflict.length>0&&isGerente&&<span style={{position:"absolute",top:-6,right:-6,background:"#FF9500",color:"#000",borderRadius:"50%",width:16,height:16,fontSize:9,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center"}}>!</span>}
+                  {blocked ? "⚠ Conflicto — no se puede agendar"
+                    : othersConflict.length>0&&isGerente ? "⚠ Agendar igual (Gerente) ✓"
+                    : "Agendar ✓"}
+                </button>
+              );
+            })()}
           </div>
         </div>
       </div>
