@@ -32,6 +32,26 @@ const db = {
       method: "DELETE",
       headers: { apikey: SUPA_KEY, Authorization: `Bearer ${SUPA_KEY}` }
     });
+  },
+  // Upsert a config key/value — uses key as the unique identifier
+  async setConfig(key, value) {
+    await fetch(`${SUPA_URL}/rest/v1/config?key=eq.${key}`, {
+      method: "DELETE",
+      headers: { apikey: SUPA_KEY, Authorization: `Bearer ${SUPA_KEY}` }
+    });
+    await fetch(`${SUPA_URL}/rest/v1/config`, {
+      method: "POST",
+      headers: { apikey: SUPA_KEY, Authorization: `Bearer ${SUPA_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ key, value: JSON.stringify(value) })
+    });
+  },
+  async getConfig(key) {
+    const r = await fetch(`${SUPA_URL}/rest/v1/config?key=eq.${key}&select=value`, {
+      headers: { apikey: SUPA_KEY, Authorization: `Bearer ${SUPA_KEY}` }
+    });
+    const d = await r.json();
+    if (Array.isArray(d) && d[0]) { try { return JSON.parse(d[0].value); } catch { return null; } }
+    return null;
   }
 };
 
@@ -311,23 +331,35 @@ html,body{background:#08090E;overscroll-behavior:none;}
 
 // ══════════════════════════════════════════════════════════════════════════
 export default function App() {
-  const [user,    setUser]    = useState(null);
-  const [users,   setUsers]   = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [carteras, setCarteras] = useState(() => {
-    try { const s = localStorage.getItem("ct_carteras"); return s ? JSON.parse(s) : DEFAULT_CARTERAS; } catch { return DEFAULT_CARTERAS; }
-  });
-  const [roles, setRoles] = useState(() => {
-    try { const s = localStorage.getItem("ct_roles"); return s ? JSON.parse(s) : DEFAULT_ROLES; } catch { return DEFAULT_ROLES; }
-  });
+  const [user,     setUser]     = useState(null);
+  const [users,    setUsers]    = useState([]);
+  const [loading,  setLoading]  = useState(true);
+  const [carteras, setCarteras] = useState(DEFAULT_CARTERAS);
+  const [roles,    setRoles]    = useState(DEFAULT_ROLES);
 
-  const saveCarteras = list => { setCarteras(list); localStorage.setItem("ct_carteras", JSON.stringify(list)); };
-  const saveRoles    = list => { setRoles(list);    localStorage.setItem("ct_roles",    JSON.stringify(list)); };
+  const saveCarteras = async list => {
+    setCarteras(list);
+    await db.setConfig("carteras", list);
+  };
+  const saveRoles = async list => {
+    setRoles(list);
+    await db.setConfig("roles", list);
+  };
+
   const getRoleLabel = key => roles.find(r=>r.key===key)?.label || key;
   const getRoleColor = key => roles.find(r=>r.key===key)?.color || "#8891B0";
 
   useEffect(() => {
-    db.get("users","select=*").then(d => { setUsers(Array.isArray(d)?d:[]); setLoading(false); });
+    Promise.all([
+      db.get("users", "select=*"),
+      db.getConfig("carteras"),
+      db.getConfig("roles"),
+    ]).then(([u, c, r]) => {
+      setUsers(Array.isArray(u) ? u : []);
+      if (Array.isArray(c) && c.length > 0) setCarteras(c);
+      if (Array.isArray(r) && r.length > 0) setRoles(r);
+      setLoading(false);
+    });
   }, []);
 
   const refreshUsers = () => db.get("users","select=*").then(d => setUsers(Array.isArray(d)?d:[]));
@@ -448,6 +480,45 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
 
   const showToast = (msg, type="success") => { setToast({msg,type}); setTimeout(()=>setToast(null),3000); };
 
+  // ── NORMALIZADORES — garantizan que todos los campos existan sin importar
+  //    cuándo fue creado el registro. Compatibilidad con versiones anteriores.
+  const normalizeTask = t => ({
+    title:           t.title           || "",
+    description:     t.description     || "",
+    priority:        t.priority        || "media",
+    status:          t.status          || "pendiente",
+    cartera:         t.cartera         || "",
+    due_date:        t.due_date        || null,
+    start_date:      t.start_date      || null,
+    task_time:       t.task_time       || null,
+    recurrence:      t.recurrence      || null,
+    recurrence_days: t.recurrence_days || null,
+    recurrence_end:  t.recurrence_end  || null,
+    notify_before:   t.notify_before   || null,
+    is_published:    t.is_published    ?? true,
+    visible_to:      t.visible_to      || null,
+    assigned_to:     Array.isArray(t.assigned_to) ? t.assigned_to : (t.assigned_to ? [t.assigned_to] : []),
+    assigned_by:     t.assigned_by     || null,
+    ...t // keep id, created_at and any future fields
+  });
+
+  const normalizeMeeting = m => ({
+    title:           m.title           || "",
+    date:            m.date            || null,
+    time:            m.time            || "",
+    type:            m.type            || "otro",
+    notes:           m.notes           || "",
+    participants:    Array.isArray(m.participants) ? m.participants : [],
+    notify_before:   Array.isArray(m.notify_before) ? m.notify_before : [],
+    recurrence:      m.recurrence      || null,
+    recurrence_days: m.recurrence_days || null,
+    recurrence_end:  m.recurrence_end  || null,
+    acta:            m.acta            || null,
+    acta_updated_by: m.acta_updated_by || null,
+    created_by:      m.created_by      || null,
+    ...m
+  });
+
   const loadAll = useCallback(async () => {
     const [t,m,c,h] = await Promise.all([
       db.get("tasks","select=*"),
@@ -455,8 +526,8 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
       db.get("task_comments","select=*"),
       db.get("task_history","select=*")
     ]);
-    setTasks(Array.isArray(t)?t:[]);
-    setMeetings(Array.isArray(m)?m:[]);
+    setTasks(Array.isArray(t) ? t.map(normalizeTask) : []);
+    setMeetings(Array.isArray(m) ? m.map(normalizeMeeting) : []);
     setComments(Array.isArray(c)?c:[]);
     setHistory(Array.isArray(h)?h:[]);
     setLoading(false);
@@ -1043,7 +1114,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
             const assignees = Array.isArray(form.assignedTo)?form.assignedTo:[form.assignedTo];
             const data={title:form.title,description:form.description,assigned_to:assignees,assigned_by:currentUser.id,priority:form.priority,status:"pendiente",due_date:form.due_date,start_date:form.start_date||null,task_time:form.task_time||null,cartera:form.cartera,is_published:currentUser.role!=="gerente"?true:(form.is_published??true),recurrence:form.recurrence||null,recurrence_days:form.recurrence_days||null,recurrence_end:form.recurrence_end||null,notify_before:form.notify_before||null};
             const res=await db.insert("tasks",data);
-            if(Array.isArray(res)&&res[0]){ setTasks(p=>[res[0],...p]); await logHistory(res[0].id,"created","",form.title); }
+            if(Array.isArray(res)&&res[0]){ setTasks(p=>[normalizeTask(res[0]),...p]); await logHistory(res[0].id,"created","",form.title); }
             setShowNewTask(false); showToast("Tarea creada ✓");
           }}
         />
@@ -1056,7 +1127,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
             const data={title:form.title,description:form.description,assigned_to:assignees,priority:form.priority,due_date:form.due_date,start_date:form.start_date||null,task_time:form.task_time||null,cartera:form.cartera,recurrence:form.recurrence||null,recurrence_days:form.recurrence_days||null,recurrence_end:form.recurrence_end||null,notify_before:form.notify_before||null};
             await db.update("tasks",editingTask.id,data);
             await logHistory(editingTask.id,"edit","","Editada");
-            setTasks(p=>p.map(t=>t.id===editingTask.id?{...t,...data}:t));
+            setTasks(p=>p.map(t=>t.id===editingTask.id?normalizeTask({...t,...data}):t));
             setEditingTask(null); showToast("Tarea actualizada ✓");
           }}
         />
@@ -1066,7 +1137,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
         <NewMeetingModal currentUser={currentUser} users={users} tasks={tasks} meetings={meetings} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} onClose={()=>setShowNewMeeting(false)}
           onSave={async form=>{
             const res=await db.insert("meetings",{...form,created_by:currentUser.id});
-            if(Array.isArray(res)&&res[0]) setMeetings(p=>[res[0],...p]);
+            if(Array.isArray(res)&&res[0]) setMeetings(p=>[normalizeMeeting(res[0]),...p]);
             setShowNewMeeting(false); showToast("Reunión agendada ✓");
           }}
         />
@@ -1189,6 +1260,7 @@ function CalendarView({ tasks, meetings, users, calDate, setCalDate, calView, se
   const month    = calDate.getMonth();
   const today    = todayStr();
   const getUser  = id => users.find(u=>u.id===id);
+  const [selectedDay, setSelectedDay] = useState(null); // {ds, tasks, meetings}
 
   const dayStr = (y,m,d) => `${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
 
@@ -1203,14 +1275,14 @@ function CalendarView({ tasks, meetings, users, calDate, setCalDate, calView, se
     const rangeStart = dayStr(year,month,1);
     const rangeEnd   = dayStr(year,month,daysInMonth);
 
-    // Expand recurring items into a map: date -> [items]
+    // Expand recurring into day map
     const tasksByDay = {}, meetsByDay = {};
     tasks.forEach(t => {
-      const dates = expandRecurring({...t, date: t.due_date}, rangeStart, rangeEnd);
+      const dates = expandRecurring({recurrence:t.recurrence,recurrence_days:t.recurrence_days,recurrence_end:t.recurrence_end,date:t.due_date}, rangeStart, rangeEnd);
       dates.forEach(ds => { if(!tasksByDay[ds]) tasksByDay[ds]=[]; tasksByDay[ds].push(t); });
     });
     meetings.forEach(m => {
-      const dates = expandRecurring(m, rangeStart, rangeEnd);
+      const dates = expandRecurring({recurrence:m.recurrence,recurrence_days:m.recurrence_days,recurrence_end:m.recurrence_end,date:m.date}, rangeStart, rangeEnd);
       dates.forEach(ds => { if(!meetsByDay[ds]) meetsByDay[ds]=[]; meetsByDay[ds].push(m); });
     });
 
@@ -1222,27 +1294,83 @@ function CalendarView({ tasks, meetings, users, calDate, setCalDate, calView, se
         <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4}}>
           {cells.map((d,i)=>{
             if(!d) return <div key={i}/>;
-            const ds        = dayStr(year,month,d);
-            const dayTasks  = tasksByDay[ds]||[];
-            const dayMeets  = meetsByDay[ds]||[];
-            const isToday   = ds===today;
-            const hasItems  = dayTasks.length>0||dayMeets.length>0;
+            const ds       = dayStr(year,month,d);
+            const dayTasks = tasksByDay[ds]||[];
+            const dayMeets = meetsByDay[ds]||[];
+            const total    = dayTasks.length+dayMeets.length;
+            const isToday  = ds===today;
             return (
-              <div key={i} className={`cal-day ${isToday?"is-today":""} ${hasItems?"has-items":""}`}>
+              <div key={i} className={`cal-day ${isToday?"is-today":""} ${total>0?"has-items":""}`}
+                onClick={()=>total>0&&setSelectedDay({ds,tasks:dayTasks,meetings:dayMeets})}>
                 <div style={{fontSize:12,fontWeight:isToday?800:600,color:isToday?"#FF4D4D":"#8891B0",marginBottom:4,lineHeight:1}}>{d}</div>
                 {dayTasks.slice(0,2).map(t=>{
                   const prio=PRIORITIES.find(p=>p.value===t.priority);
-                  return <div key={t.id+ds} className="cal-event" style={{background:prio?prio.bg:"#1E2130",color:prio?prio.color:"#8891B0",cursor:"pointer"}} title={t.title} onClick={e=>{e.stopPropagation();onItemClick({type:"task",...t});}}>{t.recurrence&&"🔁 "}{t.title}</div>;
+                  return <div key={t.id+ds} className="cal-event" style={{background:prio?prio.bg:"#1E2130",color:prio?prio.color:"#8891B0",cursor:"pointer",pointerEvents:"none"}}>{t.recurrence&&"🔁 "}{t.title}</div>;
                 })}
                 {dayMeets.slice(0,1).map(m=>{
                   const mt=MEET_TYPES[m.type]||MEET_TYPES.otro;
-                  return <div key={m.id+ds} className="cal-event" style={{background:mt.color+"18",color:mt.color,cursor:"pointer"}} title={m.title} onClick={e=>{e.stopPropagation();onItemClick({type:"meeting",...m});}}>{mt.icon}{m.recurrence&&"🔁"} {m.title}</div>;
+                  return <div key={m.id+ds} className="cal-event" style={{background:mt.color+"18",color:mt.color,cursor:"pointer",pointerEvents:"none"}}>{mt.icon}{m.recurrence&&"🔁"} {m.title}</div>;
                 })}
-                {(dayTasks.length+dayMeets.length)>3&&<div style={{fontSize:9,color:"#4A5178",fontWeight:700}}>+{dayTasks.length+dayMeets.length-3}</div>}
+                {total>3&&<div style={{fontSize:9,color:"#FF9500",fontWeight:800,marginTop:2}}>+{total-3} más</div>}
+                {total>0&&total<=3&&<div style={{fontSize:8,color:"#4A5178",fontWeight:600,marginTop:2}}>ver detalle</div>}
               </div>
             );
           })}
         </div>
+
+        {/* Day detail panel */}
+        {selectedDay&&(
+          <div className="modal-overlay" onClick={e=>e.target===e.currentTarget&&setSelectedDay(null)}>
+            <div className="modal" style={{maxWidth:440}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+                <div className="font-display" style={{fontSize:16}}>📅 {new Date(selectedDay.ds+"T00:00:00").toLocaleDateString("es-ES",{weekday:"long",day:"numeric",month:"long"})}</div>
+                <button onClick={()=>setSelectedDay(null)} style={{background:"none",border:"none",color:"#4A5178",fontSize:18,cursor:"pointer",lineHeight:1}}>×</button>
+              </div>
+              {selectedDay.meetings.length>0&&(
+                <div style={{marginBottom:12}}>
+                  <div style={{fontSize:10,fontWeight:700,color:"#4A5178",textTransform:"uppercase",letterSpacing:".6px",marginBottom:6}}>Reuniones</div>
+                  {selectedDay.meetings.map(m=>{
+                    const mt=MEET_TYPES[m.type]||MEET_TYPES.otro;
+                    return (
+                      <div key={m.id} onClick={()=>{setSelectedDay(null);onItemClick({type:"meeting",...m});}} style={{display:"flex",gap:8,alignItems:"center",padding:"8px 10px",background:"#0A0B10",border:`1px solid ${mt.color}33`,borderRadius:8,marginBottom:4,cursor:"pointer"}}>
+                        <span style={{fontSize:16}}>{mt.icon}</span>
+                        <div style={{flex:1}}>
+                          <div style={{fontWeight:700,fontSize:12,color:"#F0F2FF"}}>{m.title}</div>
+                          <div style={{fontSize:10,color:mt.color,fontWeight:600}}>{m.time} · {mt.label}{m.recurrence&&" 🔁"}</div>
+                        </div>
+                        <span style={{color:"#4A5178",fontSize:12}}>›</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {selectedDay.tasks.length>0&&(
+                <div>
+                  <div style={{fontSize:10,fontWeight:700,color:"#4A5178",textTransform:"uppercase",letterSpacing:".6px",marginBottom:6}}>Tareas</div>
+                  {selectedDay.tasks.map(t=>{
+                    const prio=PRIORITIES.find(p=>p.value===t.priority);
+                    const assignees=(Array.isArray(t.assigned_to)?t.assigned_to:[t.assigned_to]).map(id=>users.find(u=>u.id===id)).filter(Boolean);
+                    return (
+                      <div key={t.id} onClick={()=>{setSelectedDay(null);onItemClick({type:"task",...t});}} style={{display:"flex",gap:8,alignItems:"center",padding:"8px 10px",background:"#0A0B10",border:`1px solid ${prio?prio.color+"33":"#1E2130"}`,borderRadius:8,marginBottom:4,cursor:"pointer"}}>
+                        <div style={{flex:1}}>
+                          <div style={{fontWeight:700,fontSize:12,color:t.status==="completado"?"#4A5178":"#F0F2FF",textDecoration:t.status==="completado"?"line-through":"none"}}>{t.recurrence&&"🔁 "}{t.title}</div>
+                          <div style={{fontSize:10,color:"#4A5178",fontWeight:600,display:"flex",gap:6,flexWrap:"wrap",marginTop:2}}>
+                            {prio&&<span style={{color:prio.color}}>{prio.label}</span>}
+                            {t.task_time&&<span>🕐 {t.task_time}</span>}
+                            {assignees.map(u=><span key={u.id} style={{color:u.color}}>{u.name.split(" ")[0]}</span>)}
+                          </div>
+                        </div>
+                        <span style={{background:t.status==="completado"?"rgba(48,209,88,.12)":t.status==="en-proceso"?"rgba(255,149,0,.12)":"rgba(136,145,176,.08)",color:t.status==="completado"?"#30D158":t.status==="en-proceso"?"#FF9500":"#8891B0",padding:"3px 7px",borderRadius:5,fontSize:9,fontWeight:800}}>
+                          {t.status==="completado"?"✓":t.status==="en-proceso"?"●":"○"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </>
     );
   };
