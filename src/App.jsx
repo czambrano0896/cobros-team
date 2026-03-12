@@ -968,46 +968,6 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
               <button className="btn btn-red" onClick={()=>setShowNewTask(true)}>+ Tarea</button>
             </div>
 
-            {/* ── Horario de hoy ── */}
-            {(()=>{
-              const todayTasks = visibleTasks.filter(t=>t.due_date===today&&t.task_time).sort((a,b)=>a.task_time.localeCompare(b.task_time));
-              const todayMeets = meetings.filter(m=>m.date===today&&m.time).sort((a,b)=>a.time.localeCompare(b.time));
-              const all = [
-                ...todayTasks.map(t=>({key:"t-"+t.id,type:"task",time:t.task_time,timeEnd:t.task_time_end,title:t.title,raw:t})),
-                ...todayMeets.map(m=>({key:"m-"+m.id,type:"meeting",time:m.time,timeEnd:m.time_end,title:m.title,raw:m}))
-              ].sort((a,b)=>a.time.localeCompare(b.time));
-              if(all.length===0) return null;
-              return (
-                <div style={{background:"#0F1117",border:"1px solid #1E2130",borderRadius:14,padding:"14px 16px",marginBottom:18}}>
-                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
-                    <div className="font-display" style={{fontSize:15,color:"#F0F2FF",letterSpacing:"-0.3px"}}>📅 Hoy · {new Date().toLocaleDateString("es-ES",{weekday:"long",day:"numeric",month:"long"})}</div>
-                    <button className="btn btn-glass" style={{fontSize:11,padding:"4px 10px"}} onClick={()=>{setView("calendario");setCalView("dia");setCalDate(new Date());}}>Ver día completo →</button>
-                  </div>
-                  <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                    {all.map(ev=>{
-                      const prio = ev.type==="task"?PRIORITIES.find(p=>p.value===ev.raw.priority):null;
-                      const mt   = ev.type==="meeting"?(MEET_TYPES[ev.raw.type]||MEET_TYPES.otro):null;
-                      const color= prio?.color||mt?.color||"#8891B0";
-                      const icon = mt?.icon||"📋";
-                      const assignees = ev.type==="task"?getAssignees(ev.raw).map(id=>getUser(id)).filter(Boolean):[];
-                      return (
-                        <div key={ev.key} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",background:"#161825",borderRadius:9,borderLeft:`3px solid ${color}`,cursor:"pointer"}}
-                          onClick={()=>{ if(ev.type==="task") setEditingTask(ev.raw); else setCalSelectedItem({type:"meeting",...ev.raw}); }}>
-                          <div style={{fontSize:10,fontWeight:800,color:color,minWidth:44,lineHeight:1.1}}>
-                            {ev.time}{ev.timeEnd?<><br/><span style={{color:"#4A5178"}}>–{ev.timeEnd}</span></>:""}
-                          </div>
-                          <span style={{fontSize:13}}>{icon}</span>
-                          <div style={{flex:1,fontSize:13,fontWeight:600,color:"#F0F2FF",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{ev.title}</div>
-                          {assignees.length>0&&<div style={{display:"flex",gap:2}}>{assignees.slice(0,3).map(u=><div key={u.id} className="avatar" style={{width:20,height:20,background:u.color+"22",color:u.color,fontSize:8}}>{u.avatar}</div>)}</div>}
-                          {ev.type==="task"&&<span style={{fontSize:10,fontWeight:700,color:ev.raw.status==="completado"?"#30D158":ev.raw.status==="en-proceso"?"#FF9500":"#8891B0"}}>{ev.raw.status}</span>}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })()}
-
             {/* Task list */}
             {filteredTasks.length===0&&(
               <div style={{textAlign:"center",color:"#4A5178",padding:"48px 0",fontSize:14,fontWeight:600}}>
