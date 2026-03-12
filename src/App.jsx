@@ -68,9 +68,9 @@ const STATUS_NEXT = { "pendiente":"en-proceso", "en-proceso":"completado" };
 const STATUS_PREV = { "en-proceso":"pendiente", "completado":"en-proceso" };
 const DEFAULT_CARTERAS = ["Cartera Vencida","Cartera Corriente","Cartera Judicial","Cartera Empresarial","Cartera Pequeñas Cuentas"];
 const DEFAULT_ROLES    = [
-  { key:"gerente",    label:"Gerente",    color:"#FF4D4D" },
-  { key:"supervisor", label:"Supervisor", color:"#FF9500" },
-  { key:"analista",   label:"Analista",   color:"#0A84FF" },
+  { key:"gerente",    label:"Gerente",    color:"#FF4D4D", admin:true  },
+  { key:"supervisor", label:"Supervisor", color:"#FF9500", admin:false },
+  { key:"analista",   label:"Analista",   color:"#0A84FF", admin:false },
 ];
 const MEET_TYPES  = {
   seguimiento:  { label:"Seguimiento",  color:"#0A84FF", icon:"📋" },
@@ -535,7 +535,8 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
   const [selectedMember, setSelectedMember]= useState(null); // for team click-through
   const [calSelectedItem,setCalSelectedItem]=useState(null); // for calendar click detail
   const [showSettings,   setShowSettings]  = useState(false);// carteras/roles settings
-  const isGerente = currentUser.role === "gerente";
+  const isAdmin   = roles.find(r => r.key === currentUser.role)?.admin === true;
+  const isGerente = isAdmin; // alias — used throughout for backward compat
 
   const showToast = (msg, type="success") => { setToast({msg,type}); setTimeout(()=>setToast(null),3000); };
 
@@ -629,7 +630,8 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
   function isTaskVisible(task) {
     const creator = getUser(task.assigned_by);
     const assignees = getAssignees(task);
-    if (creator?.role==="gerente" && !task.is_published && task.assigned_by!==currentUser.id && !assignees.includes(currentUser.id)) return false;
+    const creatorIsAdmin = roles.find(r => r.key === creator?.role)?.admin === true;
+    if (creatorIsAdmin && !task.is_published && task.assigned_by!==currentUser.id && !assignees.includes(currentUser.id)) return false;
     if (task.visible_to?.length>0 && !task.visible_to.includes(currentUser.id)) return false;
     return true;
   }
@@ -911,7 +913,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
               const taskComments= comments.filter(c=>c.task_id===task.id);
               const taskHistory = history.filter(h=>h.task_id===task.id);
               const isExpanded  = expandedTask===task.id;
-              const isGerenteTask = getUser(task.assigned_by)?.role==="gerente";
+              const isGerenteTask = roles.find(r => r.key === getUser(task.assigned_by)?.role)?.admin === true;
 
               return (
                 <div key={task.id} className="task-row" style={{borderLeft:`3px solid ${isOver?"#FF4D4D":task.status==="completado"?"#30D15844":"transparent"}`}}>
@@ -1139,7 +1141,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
               <>
                 {isGerente&&<ManageUsers users={users} onRefresh={refreshUsers} showToast={showToast} roles={roles} saveRoles={saveRoles} carteras={carteras} saveCarteras={saveCarteras} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} />}
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(250px,1fr))",gap:10,marginTop:isGerente?0:0}}>
-                  {users.filter(u=>u.role!=="gerente").map(member=>{
+                  {users.filter(u => !roles.find(r=>r.key===u.role)?.admin).map(member=>{
                   const mt   = tasks.filter(t=>(Array.isArray(t.assigned_to)?t.assigned_to:[t.assigned_to]).includes(member.id));
                     const done = mt.filter(t=>t.status==="completado").length;
                     const ov   = mt.filter(t=>isOverdue(t)).length;
@@ -1194,10 +1196,10 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
 
       {/* ── MODALES ── */}
       {showNewTask&&(
-        <TaskModal mode="create" currentUser={currentUser} users={users} tasks={tasks} meetings={meetings} carteras={carteras} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} onClose={()=>setShowNewTask(false)}
+        <TaskModal mode="create" roles={roles} currentUser={currentUser} users={users} tasks={tasks} meetings={meetings} carteras={carteras} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} onClose={()=>setShowNewTask(false)}
           onSave={async form=>{
             const assignees = Array.isArray(form.assignedTo)?form.assignedTo:[form.assignedTo];
-            const data={title:form.title,description:form.description,assigned_to:assignees,assigned_by:currentUser.id,priority:form.priority,status:"pendiente",due_date:form.due_date,start_date:form.start_date||null,task_time:form.task_time||null,cartera:form.cartera,is_published:currentUser.role!=="gerente"?true:(form.is_published??true),recurrence:form.recurrence||null,recurrence_days:form.recurrence_days||null,recurrence_end:form.recurrence_end||null,notify_before:form.notify_before||null};
+            const data={title:form.title,description:form.description,assigned_to:assignees,assigned_by:currentUser.id,priority:form.priority,status:"pendiente",due_date:form.due_date,start_date:form.start_date||null,task_time:form.task_time||null,cartera:form.cartera,is_published:!isAdmin?true:(form.is_published??true),recurrence:form.recurrence||null,recurrence_days:form.recurrence_days||null,recurrence_end:form.recurrence_end||null,notify_before:form.notify_before||null};
             const res=await db.insert("tasks",data);
             if(Array.isArray(res)&&res[0]){ setTasks(p=>[normalizeTask(res[0]),...p]); await logHistory(res[0].id,"created","",form.title); }
             setShowNewTask(false); showToast("Tarea creada ✓"); refreshTasks();
@@ -1206,7 +1208,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
       )}
 
       {editingTask&&(
-        <TaskModal mode="edit" task={editingTask} currentUser={currentUser} users={users} tasks={tasks} meetings={meetings} carteras={carteras} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} onClose={()=>setEditingTask(null)}
+        <TaskModal mode="edit" roles={roles} task={editingTask} currentUser={currentUser} users={users} tasks={tasks} meetings={meetings} carteras={carteras} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} onClose={()=>setEditingTask(null)}
           onSave={async form=>{
             const assignees = Array.isArray(form.assignedTo)?form.assignedTo:[form.assignedTo];
             const data={title:form.title,description:form.description,assigned_to:assignees,priority:form.priority,due_date:form.due_date,start_date:form.start_date||null,task_time:form.task_time||null,cartera:form.cartera,recurrence:form.recurrence||null,recurrence_days:form.recurrence_days||null,recurrence_end:form.recurrence_end||null,notify_before:form.notify_before||null};
@@ -1219,7 +1221,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
       )}
 
       {showNewMeeting&&(
-        <NewMeetingModal currentUser={currentUser} users={users} tasks={tasks} meetings={meetings} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} onClose={()=>setShowNewMeeting(false)}
+        <NewMeetingModal roles={roles} currentUser={currentUser} users={users} tasks={tasks} meetings={meetings} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} onClose={()=>setShowNewMeeting(false)}
           onSave={async form=>{
             const clean = {...form,
               recurrence:      form.recurrence      || null,
@@ -1235,7 +1237,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
       )}
 
       {editingMeeting&&(
-        <NewMeetingModal editingMeeting={editingMeeting} currentUser={currentUser} users={users} tasks={tasks} meetings={meetings} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} onClose={()=>setEditingMeeting(null)}
+        <NewMeetingModal roles={roles} editingMeeting={editingMeeting} currentUser={currentUser} users={users} tasks={tasks} meetings={meetings} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} onClose={()=>setEditingMeeting(null)}
           onSave={async form=>{
             const clean = {...form,
               recurrence:      form.recurrence      || null,
@@ -1876,7 +1878,7 @@ function CalendarView({ tasks, meetings, users, currentUser, calScope, setCalSco
 // ══════════════════════════════════════════════════════════════════════════
 // TASK MODAL — with task_time + live conflict detection
 // ══════════════════════════════════════════════════════════════════════════
-function TaskModal({ mode, task, currentUser, users, tasks, meetings, carteras, getRoleLabel, getRoleColor, onClose, onSave }) {
+function TaskModal({ mode, task, currentUser, roles, users, tasks, meetings, carteras, getRoleLabel, getRoleColor, onClose, onSave }) {
   const init = task ? {
     title:task.title||"", description:task.description||"",
     assignedTo: Array.isArray(task.assigned_to) ? task.assigned_to : (task.assigned_to ? [task.assigned_to] : []),
@@ -1894,7 +1896,7 @@ function TaskModal({ mode, task, currentUser, users, tasks, meetings, carteras, 
   const [form,      setForm]      = useState(init);
   const [conflicts, setConflicts] = useState([]);
   const [showConflictDetail, setShowConflictDetail] = useState(false);
-  const isGerente = currentUser.role==="gerente";
+  const isGerente = roles?.find(r => r.key === currentUser.role)?.admin === true;
 
   // Live conflict detection whenever date/time/assignees change
   useEffect(() => {
@@ -1918,6 +1920,9 @@ function TaskModal({ mode, task, currentUser, users, tasks, meetings, carteras, 
   const handleSave = () => {
     if (!form.title.trim() || !form.due_date) { alert("Completa título y fecha límite"); return; }
     if (mode==="create" && form.assignedTo.length===0) { alert("Selecciona al menos un responsable"); return; }
+    if (conflicts.length > 0 && !isGerente) {
+      alert(`Hay ${conflicts.length} conflicto${conflicts.length>1?"s":""} de agenda. Cambia la fecha u hora antes de guardar.`); return;
+    }
     onSave(form);
   };
 
@@ -2038,9 +2043,14 @@ function TaskModal({ mode, task, currentUser, users, tasks, meetings, carteras, 
 
           <div style={{display:"flex",gap:8,marginTop:4}}>
             <button className="btn btn-glass" style={{flex:1,justifyContent:"center"}} onClick={onClose}>Cancelar</button>
-            <button className="btn btn-red" style={{flex:2,justifyContent:"center",position:"relative"}} onClick={handleSave}>
-              {conflicts.length>0&&<span style={{position:"absolute",top:-6,right:-6,background:"#FF9500",color:"#000",borderRadius:"50%",width:16,height:16,fontSize:9,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center"}}>!</span>}
-              {mode==="edit"?"Guardar ✓":"Crear ✓"}
+            <button className="btn btn-red" style={{flex:2,justifyContent:"center",position:"relative",
+              opacity:(conflicts.length>0&&!isGerente)?0.45:1,
+              cursor:(conflicts.length>0&&!isGerente)?"not-allowed":"pointer"}} onClick={handleSave}>
+              {conflicts.length>0&&!isGerente&&<span style={{position:"absolute",top:-6,right:-6,background:"#FF4D4D",color:"#fff",borderRadius:"50%",width:16,height:16,fontSize:9,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center"}}>✕</span>}
+              {conflicts.length>0&&isGerente&&<span style={{position:"absolute",top:-6,right:-6,background:"#FF9500",color:"#000",borderRadius:"50%",width:16,height:16,fontSize:9,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center"}}>!</span>}
+              {conflicts.length>0 && !isGerente ? "⚠ Conflicto — no se puede guardar"
+                : conflicts.length>0 && isGerente ? "⚠ Guardar igual (Gerente) ✓"
+                : mode==="edit" ? "Guardar ✓" : "Crear ✓"}
             </button>
           </div>
         </div>
@@ -2132,7 +2142,7 @@ function ManageUsers({ users, onRefresh, showToast, roles, saveRoles, carteras, 
   const [newUser,  setNewUser]  = useState({name:"",username:"",email:"",password:"",role:roles[0]?.key||"analista",avatar:"👤",color:"#8891B0"});
   const [newCartera, setNewCartera] = useState("");
   const [editCartera,setEditCartera]= useState(null); // {idx, val}
-  const [newRole,  setNewRole]  = useState({key:"",label:"",color:"#8891B0"});
+  const [newRole,  setNewRole]  = useState({key:"",label:"",color:"#8891B0",admin:false});
   const [editRole, setEditRole] = useState(null); // idx
   const COLORS = ["#FF4D4D","#FF9500","#30D158","#0A84FF","#BF5AF2","#FF6B6B","#4ECDC4","#FFE66D","#8891B0"];
 
@@ -2266,6 +2276,10 @@ function ManageUsers({ users, onRefresh, showToast, roles, saveRoles, carteras, 
                   <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
                     {COLORS.map(c=><button key={c} onClick={()=>{const n=[...roles];n[i]={...n[i],color:c};saveRoles(n);}} style={{width:20,height:20,borderRadius:"50%",background:c,border:r.color===c?"2px solid #fff":"2px solid transparent",cursor:"pointer"}}/>)}
                   </div>
+                  <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",fontSize:12,color:"#F0F2FF",fontWeight:600}}>
+                    <input type="checkbox" checked={!!r.admin} onChange={e=>{const n=[...roles];n[i]={...n[i],admin:e.target.checked};saveRoles(n);}} style={{accentColor:"#FF4D4D",width:14,height:14}}/>
+                    Admin
+                  </label>
                   <button className="btn btn-red" style={{padding:"5px 10px",fontSize:11}} onClick={()=>setEditRole(null)}>✓</button>
                 </div>
               ):(
@@ -2274,6 +2288,7 @@ function ManageUsers({ users, onRefresh, showToast, roles, saveRoles, carteras, 
                     <div style={{width:10,height:10,borderRadius:"50%",background:r.color,flexShrink:0}}/>
                     <span style={{fontSize:12,fontWeight:700,color:"#F0F2FF"}}>{r.label}</span>
                     <span style={{fontSize:10,color:"#4A5178",fontFamily:"monospace"}}>{r.key}</span>
+                    {r.admin&&<span style={{fontSize:9,fontWeight:800,color:"#FF4D4D",background:"rgba(255,77,77,.12)",border:"1px solid rgba(255,77,77,.3)",borderRadius:4,padding:"1px 5px",letterSpacing:".3px"}}>ADMIN</span>}
                   </div>
                   <button className="btn-icon" style={{fontSize:11}} onClick={()=>setEditRole(i)}>✏</button>
                   <button className="btn-danger-icon" style={{fontSize:10}} onClick={()=>{if(!window.confirm(`¿Eliminar rol "${r.label}"?`))return;saveRoles(roles.filter((_,j)=>j!==i));showToast("Rol eliminado");}}>🗑</button>
@@ -2281,12 +2296,16 @@ function ManageUsers({ users, onRefresh, showToast, roles, saveRoles, carteras, 
               )}
             </div>
           ))}
-          <div style={{display:"flex",gap:8,marginTop:10,flexWrap:"wrap"}}>
+          <div style={{display:"flex",gap:8,marginTop:10,flexWrap:"wrap",alignItems:"center"}}>
             <input className="input" style={{flex:1,fontSize:12,padding:"8px 12px",minWidth:100}} placeholder="Nombre (ej: Coordinador)" value={newRole.label} onChange={e=>setNewRole({...newRole,label:e.target.value,key:e.target.value.toLowerCase().replace(/\s+/g,"_")})} />
             <div style={{display:"flex",gap:4,alignItems:"center"}}>
               {COLORS.map(c=><button key={c} onClick={()=>setNewRole({...newRole,color:c})} style={{width:22,height:22,borderRadius:"50%",background:c,border:newRole.color===c?"2px solid #fff":"2px solid transparent",cursor:"pointer"}}/>)}
             </div>
-            <button className="btn btn-red" style={{padding:"8px 14px",fontSize:12}} onClick={()=>{if(!newRole.label.trim())return;saveRoles([...roles,{...newRole,key:newRole.key||newRole.label.toLowerCase().replace(/\s+/g,"_")}]);setNewRole({key:"",label:"",color:"#8891B0"});showToast("Rol agregado ✓");}}>+ Agregar</button>
+            <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",fontSize:12,color:"#F0F2FF",fontWeight:600,whiteSpace:"nowrap"}}>
+              <input type="checkbox" checked={!!newRole.admin} onChange={e=>setNewRole({...newRole,admin:e.target.checked})} style={{accentColor:"#FF4D4D",width:14,height:14}}/>
+              Admin
+            </label>
+            <button className="btn btn-red" style={{padding:"8px 14px",fontSize:12}} onClick={()=>{if(!newRole.label.trim())return;saveRoles([...roles,{...newRole,key:newRole.key||newRole.label.toLowerCase().replace(/\s+/g,"_")}]);setNewRole({key:"",label:"",color:"#8891B0",admin:false});showToast("Rol agregado ✓");}}>+ Agregar</button>
           </div>
         </div>
       )}
@@ -2297,7 +2316,8 @@ function ManageUsers({ users, onRefresh, showToast, roles, saveRoles, carteras, 
 // ══════════════════════════════════════════════════════════════════════════
 // NEW MEETING MODAL — with conflict detection
 // ══════════════════════════════════════════════════════════════════════════
-function NewMeetingModal({ currentUser, users, tasks, meetings, editingMeeting, getRoleLabel, getRoleColor, onClose, onSave }) {
+function NewMeetingModal({ currentUser, roles, users, tasks, meetings, editingMeeting, getRoleLabel, getRoleColor, onClose, onSave }) {
+  const isGerente = roles?.find(r => r.key === currentUser.role)?.admin === true;
   const init = editingMeeting ? {
     title:editingMeeting.title||"", date:editingMeeting.date||"", time:editingMeeting.time||"",
     type:editingMeeting.type||"seguimiento", notes:editingMeeting.notes||"",
@@ -2423,9 +2443,19 @@ function NewMeetingModal({ currentUser, users, tasks, meetings, editingMeeting, 
           </div>
           <div style={{display:"flex",gap:8}}>
             <button className="btn btn-glass" style={{flex:1,justifyContent:"center"}} onClick={onClose}>Cancelar</button>
-            <button className="btn btn-red" style={{flex:2,justifyContent:"center",position:"relative"}} onClick={()=>{if(!form.title.trim()||!form.date||!form.time){alert("Completa los campos requeridos");return;}onSave(form);}}>
-              {conflicts.length>0&&<span style={{position:"absolute",top:-6,right:-6,background:"#FF9500",color:"#000",borderRadius:"50%",width:16,height:16,fontSize:9,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center"}}>!</span>}
-              Agendar ✓
+            <button className="btn btn-red" style={{flex:2,justifyContent:"center",position:"relative",
+              opacity:(conflicts.length>0&&!isGerente)?0.45:1,
+              cursor:(conflicts.length>0&&!isGerente)?"not-allowed":"pointer"}}
+              onClick={()=>{
+                if(!form.title.trim()||!form.date||!form.time){alert("Completa los campos requeridos");return;}
+                if(conflicts.length>0&&!isGerente){alert(`Hay ${conflicts.length} conflicto${conflicts.length>1?"s":""} de agenda. Cambia la fecha u hora antes de agendar.`);return;}
+                onSave(form);
+              }}>
+              {conflicts.length>0&&!isGerente&&<span style={{position:"absolute",top:-6,right:-6,background:"#FF4D4D",color:"#fff",borderRadius:"50%",width:16,height:16,fontSize:9,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center"}}>✕</span>}
+              {conflicts.length>0&&isGerente&&<span style={{position:"absolute",top:-6,right:-6,background:"#FF9500",color:"#000",borderRadius:"50%",width:16,height:16,fontSize:9,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center"}}>!</span>}
+              {conflicts.length>0 && !isGerente ? "⚠ Conflicto — no se puede agendar"
+                : conflicts.length>0 && isGerente ? "⚠ Agendar igual (Gerente) ✓"
+                : "Agendar ✓"}
             </button>
           </div>
         </div>
