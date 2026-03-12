@@ -33,17 +33,18 @@ const db = {
       headers: { apikey: SUPA_KEY, Authorization: `Bearer ${SUPA_KEY}` }
     });
   },
-  // Upsert a config key/value — uses key as the unique identifier
+  // Upsert config — operación atómica, nunca borra sin reemplazar
   async setConfig(key, value) {
-    await fetch(`${SUPA_URL}/rest/v1/config?key=eq.${key}`, {
-      method: "DELETE",
-      headers: { apikey: SUPA_KEY, Authorization: `Bearer ${SUPA_KEY}` }
-    });
-    await fetch(`${SUPA_URL}/rest/v1/config`, {
+    const r = await fetch(`${SUPA_URL}/rest/v1/config`, {
       method: "POST",
-      headers: { apikey: SUPA_KEY, Authorization: `Bearer ${SUPA_KEY}`, "Content-Type": "application/json" },
+      headers: {
+        apikey: SUPA_KEY, Authorization: `Bearer ${SUPA_KEY}`,
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates,return=representation"
+      },
       body: JSON.stringify({ key, value: JSON.stringify(value) })
     });
+    return r.ok;
   },
   async getConfig(key) {
     const r = await fetch(`${SUPA_URL}/rest/v1/config?key=eq.${key}&select=value`, {
@@ -84,6 +85,25 @@ const MONTHS     = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Ag
 const fmtDate  = d => { if(!d) return ""; return new Date(d+"T00:00:00").toLocaleDateString("es-ES",{day:"2-digit",month:"short",year:"numeric"}); };
 const fmtShort = d => { if(!d) return ""; return new Date(d+"T00:00:00").toLocaleDateString("es-ES",{day:"2-digit",month:"short"}); };
 const daysLeft = d => { if(!d) return null; const t=new Date(); t.setHours(0,0,0,0); return Math.ceil((new Date(d+"T00:00:00")-t)/86400000); };
+
+// Una tarea está vencida solo si ya pasó su fecha/hora exacta
+const isOverdue = (task) => {
+  if (!task.due_date) return false;
+  if (task.status === "completado") return false;
+  const now = new Date();
+  if (task.task_time) {
+    // Tiene hora — vencida solo si ya pasó fecha+hora
+    const [h, m] = task.task_time.split(":").map(Number);
+    const deadline = new Date(task.due_date + "T00:00:00");
+    deadline.setHours(h, m, 0, 0);
+    return now > deadline;
+  } else {
+    // Sin hora — vencida si la fecha ya pasó (no hoy, sino días anteriores)
+    const today = new Date(); today.setHours(0,0,0,0);
+    const deadline = new Date(task.due_date + "T00:00:00");
+    return deadline < today;
+  }
+};
 const todayStr = () => new Date().toISOString().split("T")[0];
 
 // ─── EXPAND RECURRING EVENTS ─────────────────────────────────────────────
@@ -340,8 +360,13 @@ html,body{background:#08090E;overscroll-behavior:none;}
 
 // ══════════════════════════════════════════════════════════════════════════
 export default function App() {
-  const [user,     setUser]     = useState(null);
+  const [user,     setUser]     = useState(() => {
+    try { const s = localStorage.getItem("ct_session"); return s ? JSON.parse(s) : null; } catch { return null; }
+  });
   const [users,    setUsers]    = useState([]);
+
+  const login  = u => { setUser(u); localStorage.setItem("ct_session", JSON.stringify(u)); };
+  const logout = () => { setUser(null); localStorage.removeItem("ct_session"); };
   const [loading,  setLoading]  = useState(true);
   const [carteras, setCarteras] = useState(DEFAULT_CARTERAS);
   const [roles,    setRoles]    = useState(DEFAULT_ROLES);
@@ -363,10 +388,33 @@ export default function App() {
       db.get("users", "select=*"),
       db.getConfig("carteras"),
       db.getConfig("roles"),
-    ]).then(([u, c, r]) => {
+    ]).then(async ([u, c, r]) => {
       setUsers(Array.isArray(u) ? u : []);
-      if (Array.isArray(c) && c.length > 0) setCarteras(c);
-      if (Array.isArray(r) && r.length > 0) setRoles(r);
+
+      // Carteras: si hay en Supabase las usa, si no migra desde localStorage
+      if (Array.isArray(c) && c.length > 0) {
+        setCarteras(c);
+      } else {
+        try {
+          const local = localStorage.getItem("ct_carteras");
+          const toSave = local ? JSON.parse(local) : DEFAULT_CARTERAS;
+          setCarteras(toSave);
+          await db.setConfig("carteras", toSave);
+        } catch { setCarteras(DEFAULT_CARTERAS); }
+      }
+
+      // Roles: igual
+      if (Array.isArray(r) && r.length > 0) {
+        setRoles(r);
+      } else {
+        try {
+          const local = localStorage.getItem("ct_roles");
+          const toSave = local ? JSON.parse(local) : DEFAULT_ROLES;
+          setRoles(toSave);
+          await db.setConfig("roles", toSave);
+        } catch { setRoles(DEFAULT_ROLES); }
+      }
+
       setLoading(false);
     });
   }, []);
@@ -383,8 +431,8 @@ export default function App() {
     </div>
   );
 
-  if (!user) return <LoginScreen users={users} onLogin={setUser} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} />;
-  return <Dashboard currentUser={user} users={users} refreshUsers={refreshUsers} onLogout={()=>setUser(null)}
+  if (!user) return <LoginScreen users={users} onLogin={login} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} />;
+  return <Dashboard currentUser={user} users={users} refreshUsers={refreshUsers} onLogout={logout}
     carteras={carteras} saveCarteras={saveCarteras}
     roles={roles} saveRoles={saveRoles}
     getRoleLabel={getRoleLabel} getRoleColor={getRoleColor}
@@ -544,6 +592,22 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
 
   useEffect(() => { loadAll(); }, [loadAll]);
 
+  // Auto-refresh cada 30 segundos para ver cambios de otros usuarios
+  useEffect(() => {
+    const interval = setInterval(() => { loadAll(); }, 30000);
+    return () => clearInterval(interval);
+  }, [loadAll]);
+
+  const refreshTasks    = useCallback(async () => {
+    const t = await db.get("tasks","select=*");
+    if (Array.isArray(t)) setTasks(t.map(normalizeTask));
+  }, []);
+
+  const refreshMeetings = useCallback(async () => {
+    const m = await db.get("meetings","select=*");
+    if (Array.isArray(m)) setMeetings(m.map(normalizeMeeting));
+  }, []);
+
   const [filterPerson,   setFilterPerson]  = useState("all");
 
   const getUser = id => users.find(u => u.id === id);
@@ -586,9 +650,9 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
     if (!assignees.includes(currentUser.id) && t.assigned_by!==currentUser.id && !isGerente) return;
     const dl = daysLeft(t.due_date);
     if (t.status!=="completado") {
-      if (dl!==null&&dl<=0) notifications.push({id:`ov-${t.id}`,type:"error",  msg:`"${t.title}" está VENCIDA`});
-      if (dl===1)           notifications.push({id:`d1-${t.id}`,type:"warning",msg:`"${t.title}" vence mañana`});
-      if (dl===2)           notifications.push({id:`d2-${t.id}`,type:"info",   msg:`"${t.title}" vence en 2 días`});
+      if (isOverdue(t))  notifications.push({id:`ov-${t.id}`,type:"error",  msg:`"${t.title}" está VENCIDA`});
+      else if (dl===1)   notifications.push({id:`d1-${t.id}`,type:"warning",msg:`"${t.title}" vence mañana`});
+      else if (dl===2)   notifications.push({id:`d2-${t.id}`,type:"info",   msg:`"${t.title}" vence en 2 días`});
     }
   });
   meetings.forEach(m => {
@@ -609,13 +673,13 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
   const deleteTask = async id => {
     await db.delete("tasks",id);
     setTasks(p=>p.filter(t=>t.id!==id));
-    setConfirmDelete(null); showToast("Tarea eliminada");
+    setConfirmDelete(null); showToast("Tarea eliminada"); refreshTasks();
   };
 
   const deleteMeeting = async id => {
     await db.delete("meetings",id);
     setMeetings(p=>p.filter(m=>m.id!==id));
-    setConfirmDelete(null); showToast("Reunión eliminada");
+    setConfirmDelete(null); showToast("Reunión eliminada"); refreshMeetings();
   };
 
   const togglePublish = async task => {
@@ -645,7 +709,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
     if (activeStat==="pendiente"  && t.status!=="pendiente") return false;
     if (activeStat==="en-proceso" && t.status!=="en-proceso") return false;
     if (activeStat==="completado" && t.status!=="completado") return false;
-    if (activeStat==="vencidas"   && !(t.status!=="completado"&&daysLeft(t.due_date)!==null&&daysLeft(t.due_date)<=0)) return false;
+    if (activeStat==="vencidas"   && !(isOverdue(t))) return false;
     if (filterPriority!=="all" && t.priority!==filterPriority) return false;
     if (filterStatus!=="all"   && t.status!==filterStatus) return false;
     if (filterCartera!=="all"  && t.cartera!==filterCartera) return false;
@@ -657,7 +721,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
     pendiente: visibleTasks.filter(t=>t.status==="pendiente").length,
     enProceso: visibleTasks.filter(t=>t.status==="en-proceso").length,
     completado:visibleTasks.filter(t=>t.status==="completado").length,
-    vencidas:  visibleTasks.filter(t=>t.status!=="completado"&&daysLeft(t.due_date)!==null&&daysLeft(t.due_date)<=0).length,
+    vencidas:  visibleTasks.filter(t=>isOverdue(t)).length,
   };
 
   // Export
@@ -841,7 +905,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
               const assigner    = getUser(task.assigned_by);
               const prio        = PRIORITIES.find(p=>p.value===task.priority);
               const dl          = daysLeft(task.due_date);
-              const isOver      = dl!==null&&dl<=0&&task.status!=="completado";
+              const isOver      = isOverdue(task);
               const taskComments= comments.filter(c=>c.task_id===task.id);
               const taskHistory = history.filter(h=>h.task_id===task.id);
               const isExpanded  = expandedTask===task.id;
@@ -864,8 +928,8 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
                         {prio&&<span className="badge" style={{color:prio.color,background:prio.bg,fontSize:10}}>{prio.label}</span>}
                         {task.cartera&&<span className="badge" style={{color:"#8891B0",background:"rgba(136,145,176,.1)",fontSize:10}}>{task.cartera.replace("Cartera ","")}</span>}
                         {task.status!=="completado"&&dl!==null&&(
-                          <span className="pill" style={{background:dl<=0?"rgba(255,77,77,.15)":dl<=2?"rgba(255,149,0,.15)":"rgba(136,145,176,.1)",color:dl<=0?"#FF4D4D":dl<=2?"#FF9500":"#8891B0"}}>
-                            {dl<=0?"VENCIDA":dl===1?"Mañana":`${dl}d`}
+                          <span className="pill" style={{background:isOver?"rgba(255,77,77,.15)":dl!==null&&dl<=2?"rgba(255,149,0,.15)":"rgba(136,145,176,.1)",color:isOver?"#FF4D4D":dl!==null&&dl<=2?"#FF9500":"#8891B0"}}>
+                            {isOver?"VENCIDA":dl===1?"Mañana":dl===0?"Hoy":`${dl}d`}
                           </span>
                         )}
                         {isGerenteTask&&!task.is_published&&<span className="pill" style={{background:"rgba(74,81,120,.2)",color:"#4A5178"}}>🔒 Privada</span>}
@@ -1040,7 +1104,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
                   : [...tasks.filter(t=>(Array.isArray(t.assigned_to)?t.assigned_to:[t.assigned_to]).includes(selectedMember.id))].sort((a,b)=>PRIO_ORDER[a.priority]-PRIO_ORDER[b.priority]).map(task=>{
                       const prio=PRIORITIES.find(p=>p.value===task.priority);
                       const dl=daysLeft(task.due_date);
-                      const isOver=dl!==null&&dl<=0&&task.status!=="completado";
+                      const isOver=isOverdue(task);
                       return (
                         <div key={task.id} className="task-row" style={{borderLeft:`3px solid ${isOver?"#FF4D4D":task.status==="completado"?"#30D15844":"transparent"}`}}>
                           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10}}>
@@ -1071,7 +1135,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
                   {users.filter(u=>u.role!=="gerente").map(member=>{
                   const mt   = tasks.filter(t=>(Array.isArray(t.assigned_to)?t.assigned_to:[t.assigned_to]).includes(member.id));
                     const done = mt.filter(t=>t.status==="completado").length;
-                    const ov   = mt.filter(t=>t.status!=="completado"&&daysLeft(t.due_date)!==null&&daysLeft(t.due_date)<=0).length;
+                    const ov   = mt.filter(t=>isOverdue(t)).length;
                     const pct  = mt.length>0?Math.round((done/mt.length)*100):0;
                     return (
                       <div key={member.id} onClick={()=>setSelectedMember(member)} style={{background:"#0F1117",border:"1px solid #1E2130",borderRadius:14,padding:16,cursor:"pointer",transition:"all .18s"}}
@@ -1129,7 +1193,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
             const data={title:form.title,description:form.description,assigned_to:assignees,assigned_by:currentUser.id,priority:form.priority,status:"pendiente",due_date:form.due_date,start_date:form.start_date||null,task_time:form.task_time||null,cartera:form.cartera,is_published:currentUser.role!=="gerente"?true:(form.is_published??true),recurrence:form.recurrence||null,recurrence_days:form.recurrence_days||null,recurrence_end:form.recurrence_end||null,notify_before:form.notify_before||null};
             const res=await db.insert("tasks",data);
             if(Array.isArray(res)&&res[0]){ setTasks(p=>[normalizeTask(res[0]),...p]); await logHistory(res[0].id,"created","",form.title); }
-            setShowNewTask(false); showToast("Tarea creada ✓");
+            setShowNewTask(false); showToast("Tarea creada ✓"); refreshTasks();
           }}
         />
       )}
@@ -1142,7 +1206,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
             await db.update("tasks",editingTask.id,data);
             await logHistory(editingTask.id,"edit","","Editada");
             setTasks(p=>p.map(t=>t.id===editingTask.id?normalizeTask({...t,...data}):t));
-            setEditingTask(null); showToast("Tarea actualizada ✓");
+            setEditingTask(null); showToast("Tarea actualizada ✓"); refreshTasks();
           }}
         />
       )}
@@ -1152,7 +1216,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
           onSave={async form=>{
             const res=await db.insert("meetings",{...form,created_by:currentUser.id});
             if(Array.isArray(res)&&res[0]) setMeetings(p=>[normalizeMeeting(res[0]),...p]);
-            setShowNewMeeting(false); showToast("Reunión agendada ✓");
+            setShowNewMeeting(false); showToast("Reunión agendada ✓"); refreshMeetings();
           }}
         />
       )}
@@ -1219,7 +1283,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
                   <div style={{display:"flex",flexDirection:"column",gap:7,marginBottom:16}}>
                     {assignees.length>0&&<div style={{fontSize:12}}><span style={{color:"#4A5178",fontWeight:700}}>Responsables: </span>{assignees.map((u,i)=><span key={u.id}>{i>0?", ":""}<span style={{color:u.color}}>{u.name.split(" ")[0]}</span></span>)}</div>}
                     {assigner&&<div style={{fontSize:12,color:"#4A5178"}}><span style={{fontWeight:700}}>Asignado por: </span><span style={{color:assigner.color}}>{assigner.name.split(" ")[0]}</span></div>}
-                    {t.due_date&&<div style={{fontSize:12,color:dl!==null&&dl<=0?"#FF4D4D":"#8891B0"}}><span style={{fontWeight:700,color:"#4A5178"}}>Vence: </span>{fmtDate(t.due_date)}{t.task_time&&` a las ${t.task_time}`}{dl!==null&&dl<=0&&" · VENCIDA"}</div>}
+                    {t.due_date&&<div style={{fontSize:12,color:isOverdue(t)?"#FF4D4D":"#8891B0"}}><span style={{fontWeight:700,color:"#4A5178"}}>Vence: </span>{fmtDate(t.due_date)}{t.task_time&&` a las ${t.task_time}`}{isOverdue(t)&&" · VENCIDA"}</div>}
                     {t.cartera&&<div style={{fontSize:12,color:"#8891B0"}}><span style={{fontWeight:700,color:"#4A5178"}}>Cartera: </span>{t.cartera}</div>}
                     {t.recurrence&&<div style={{fontSize:12,color:"#BF5AF2"}}><span style={{fontWeight:700,color:"#4A5178"}}>Recurrencia: </span>🔁 {t.recurrence}{t.recurrence_end&&` hasta ${fmtDate(t.recurrence_end)}`}</div>}
                     <div style={{fontSize:12}}><span style={{fontWeight:700,color:"#4A5178"}}>Estado: </span><span style={{color:t.status==="completado"?"#30D158":t.status==="en-proceso"?"#FF9500":"#8891B0",fontWeight:700}}>{t.status}</span></div>
@@ -1302,17 +1366,22 @@ function MetricasView({ tasks, meetings, users, getAssignees, getRoleLabel, getR
     return true;
   };
 
-  // ── Filtrar tareas y reuniones por período ──
-  const periodTasks    = tasks.filter(t => periodo === "todo" ? true : inRange(t.due_date));
+  // Filtrar tareas y reuniones por período
+  // Para tareas: incluye si due_date O created_at cae en el rango (así no se pierden completadas)
+  const periodTasks = tasks.filter(t => {
+    if (periodo === "todo") return true;
+    return inRange(t.due_date) || inRange(t.created_at?.split("T")[0]);
+  });
   const periodMeetings = meetings.filter(m => periodo === "todo" ? true : inRange(m.date));
 
   // ── Métricas por persona ──
+  const todayStr2 = today.toISOString().split("T")[0];
   const memberStats = users.map(u => {
     const myTasks     = periodTasks.filter(t => getAssignees(t).includes(u.id));
     const total       = myTasks.length;
     const completadas = myTasks.filter(t => t.status === "completado").length;
     const activas     = myTasks.filter(t => t.status !== "completado").length;
-    const vencidas    = myTasks.filter(t => t.status !== "completado" && t.due_date && t.due_date < today.toISOString().split("T")[0]).length;
+    const vencidas    = myTasks.filter(t => isOverdue(t)).length;
     const cumplimiento = total > 0 ? Math.round((completadas / total) * 100) : null;
 
     // Tiempo promedio en completar (días entre created_at y última actualización — approx usando due_date vs created_at)
@@ -1341,9 +1410,9 @@ function MetricasView({ tasks, meetings, users, getAssignees, getRoleLabel, getR
   });
 
   // ── Totales globales ──
-  const totalTareas     = periodTasks.length;
-  const totalCompletadas= periodTasks.filter(t=>t.status==="completado").length;
-  const totalVencidas   = periodTasks.filter(t=>t.status!=="completado"&&t.due_date&&t.due_date<today.toISOString().split("T")[0]).length;
+  const totalTareas      = periodTasks.length;
+  const totalCompletadas = periodTasks.filter(t=>t.status==="completado").length;
+  const totalVencidas    = periodTasks.filter(t=>isOverdue(t)).length;
   const cumplimientoGlobal = totalTareas > 0 ? Math.round((totalCompletadas / totalTareas) * 100) : 0;
 
   // ── Max values for bar scaling ──
