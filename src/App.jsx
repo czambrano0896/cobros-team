@@ -70,29 +70,30 @@ const todayStr = () => new Date().toISOString().split("T")[0];
 // Returns all dates a recurring task/meeting appears on, within a date range
 function expandRecurring(item, rangeStart, rangeEnd) {
   const dates = [];
-  const base = new Date(item.date || item.due_date);
-  if (isNaN(base)) return [item.date || item.due_date].filter(Boolean);
+  const baseStr = item.date || item.due_date;
+  if (!baseStr) return [];
+  const base = new Date(baseStr + "T00:00:00");
+  if (isNaN(base)) return [baseStr];
   const end = item.recurrence_end ? new Date(item.recurrence_end + "T00:00:00") : new Date(rangeEnd + "T00:00:00");
-  const rEnd = end < new Date(rangeEnd + "T00:00:00") ? end : new Date(rangeEnd + "T00:00:00");
+  const rEnd   = end   < new Date(rangeEnd   + "T00:00:00") ? end   : new Date(rangeEnd   + "T00:00:00");
   const rStart = new Date(rangeStart + "T00:00:00");
 
-  if (!item.recurrence) return [(item.date || item.due_date)].filter(Boolean);
+  if (!item.recurrence) return [baseStr];
 
   let cur = new Date(base);
   let safetyLimit = 0;
-  while (cur <= rEnd && safetyLimit < 400) {
+  while (cur <= rEnd && safetyLimit < 500) {
     safetyLimit++;
     if (cur >= rStart) {
-      const ds = cur.toISOString().split("T")[0];
+      const ds = `${cur.getFullYear()}-${String(cur.getMonth()+1).padStart(2,"0")}-${String(cur.getDate()).padStart(2,"0")}`;
       if (item.recurrence !== "semanal" || !item.recurrence_days?.length || item.recurrence_days.includes(cur.getDay())) {
         dates.push(ds);
       }
     }
-    // Advance
-    if (item.recurrence === "diaria") cur.setDate(cur.getDate() + 1);
-    else if (item.recurrence === "semanal") cur.setDate(cur.getDate() + 1);
+    if      (item.recurrence === "diaria")    cur.setDate(cur.getDate() + 1);
+    else if (item.recurrence === "semanal")   cur.setDate(cur.getDate() + 1);
     else if (item.recurrence === "quincenal") cur.setDate(cur.getDate() + 14);
-    else if (item.recurrence === "mensual") cur.setMonth(cur.getMonth() + 1);
+    else if (item.recurrence === "mensual")   cur.setMonth(cur.getMonth() + 1);
     else break;
   }
   return dates;
@@ -953,9 +954,9 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
                     <span className="badge" style={{color:getRoleColor(selectedMember.role),background:getRoleColor(selectedMember.role)+"15",fontSize:10}}>{getRoleLabel(selectedMember.role)}</span>
                   </div>
                 </div>
-                {tasks.filter(t=>t.assigned_to===selectedMember.id).length===0
+                {tasks.filter(t=>(Array.isArray(t.assigned_to)?t.assigned_to:[t.assigned_to]).includes(selectedMember.id)).length===0
                   ? <div style={{textAlign:"center",color:"#4A5178",padding:"32px 0",fontSize:13,fontWeight:600}}>📭 Sin tareas asignadas</div>
-                  : [...tasks.filter(t=>t.assigned_to===selectedMember.id)].sort((a,b)=>PRIO_ORDER[a.priority]-PRIO_ORDER[b.priority]).map(task=>{
+                  : [...tasks.filter(t=>(Array.isArray(t.assigned_to)?t.assigned_to:[t.assigned_to]).includes(selectedMember.id))].sort((a,b)=>PRIO_ORDER[a.priority]-PRIO_ORDER[b.priority]).map(task=>{
                       const prio=PRIORITIES.find(p=>p.value===task.priority);
                       const dl=daysLeft(task.due_date);
                       const isOver=dl!==null&&dl<=0&&task.status!=="completado";
@@ -987,7 +988,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
                 {isGerente&&<ManageUsers users={users} onRefresh={refreshUsers} showToast={showToast} roles={roles} saveRoles={saveRoles} carteras={carteras} saveCarteras={saveCarteras} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} />}
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(250px,1fr))",gap:10,marginTop:isGerente?0:0}}>
                   {users.filter(u=>u.role!=="gerente").map(member=>{
-                    const mt   = tasks.filter(t=>t.assigned_to===member.id);
+                  const mt   = tasks.filter(t=>(Array.isArray(t.assigned_to)?t.assigned_to:[t.assigned_to]).includes(member.id));
                     const done = mt.filter(t=>t.status==="completado").length;
                     const ov   = mt.filter(t=>t.status!=="completado"&&daysLeft(t.due_date)!==null&&daysLeft(t.due_date)<=0).length;
                     const pct  = mt.length>0?Math.round((done/mt.length)*100):0;
