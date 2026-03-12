@@ -66,6 +66,38 @@ const fmtShort = d => { if(!d) return ""; return new Date(d+"T00:00:00").toLocal
 const daysLeft = d => { if(!d) return null; const t=new Date(); t.setHours(0,0,0,0); return Math.ceil((new Date(d+"T00:00:00")-t)/86400000); };
 const todayStr = () => new Date().toISOString().split("T")[0];
 
+// ─── EXPAND RECURRING EVENTS ─────────────────────────────────────────────
+// Returns all dates a recurring task/meeting appears on, within a date range
+function expandRecurring(item, rangeStart, rangeEnd) {
+  const dates = [];
+  const base = new Date(item.date || item.due_date);
+  if (isNaN(base)) return [item.date || item.due_date].filter(Boolean);
+  const end = item.recurrence_end ? new Date(item.recurrence_end + "T00:00:00") : new Date(rangeEnd + "T00:00:00");
+  const rEnd = end < new Date(rangeEnd + "T00:00:00") ? end : new Date(rangeEnd + "T00:00:00");
+  const rStart = new Date(rangeStart + "T00:00:00");
+
+  if (!item.recurrence) return [(item.date || item.due_date)].filter(Boolean);
+
+  let cur = new Date(base);
+  let safetyLimit = 0;
+  while (cur <= rEnd && safetyLimit < 400) {
+    safetyLimit++;
+    if (cur >= rStart) {
+      const ds = cur.toISOString().split("T")[0];
+      if (item.recurrence !== "semanal" || !item.recurrence_days?.length || item.recurrence_days.includes(cur.getDay())) {
+        dates.push(ds);
+      }
+    }
+    // Advance
+    if (item.recurrence === "diaria") cur.setDate(cur.getDate() + 1);
+    else if (item.recurrence === "semanal") cur.setDate(cur.getDate() + 1);
+    else if (item.recurrence === "quincenal") cur.setDate(cur.getDate() + 14);
+    else if (item.recurrence === "mensual") cur.setMonth(cur.getMonth() + 1);
+    else break;
+  }
+  return dates;
+}
+
 // ─── CONFLICT DETECTION ──────────────────────────────────────────────────
 // Returns list of conflict descriptions for given people + date + time
 // Checks ±60 min window around the proposed time
@@ -109,7 +141,8 @@ function detectConflicts({ date, time, excludeId, excludeType, userIds, tasks, m
       if (excludeType === "task" && t.id === excludeId) return;
       if (t.due_date !== date) return;
       if (!t.task_time) return;
-      if (t.assigned_to !== uid) return;
+      const taskAssignees = Array.isArray(t.assigned_to) ? t.assigned_to : (t.assigned_to ? [t.assigned_to] : []);
+      if (!taskAssignees.includes(uid)) return;
       const [th, tmin] = t.task_time.split(":").map(Number);
       const taskMins = th * 60 + tmin;
       if (Math.abs(proposedMins - taskMins) < WINDOW) {
@@ -430,7 +463,16 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
 
   useEffect(() => { loadAll(); }, [loadAll]);
 
+  const [filterPerson,   setFilterPerson]  = useState("all");
+
   const getUser = id => users.find(u => u.id === id);
+
+  // Helper: get assignees array from task (supports both old int and new array)
+  const getAssignees = task => {
+    if (Array.isArray(task.assigned_to)) return task.assigned_to;
+    if (task.assigned_to) return [task.assigned_to];
+    return [];
+  };
 
   const logHistory = async (taskId, action, oldVal, newVal) => {
     const res = await db.insert("task_history", {task_id:taskId,user_id:currentUser.id,action,old_value:String(oldVal),new_value:String(newVal)});
@@ -439,7 +481,8 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
 
   function isTaskVisible(task) {
     const creator = getUser(task.assigned_by);
-    if (creator?.role==="gerente" && !task.is_published && task.assigned_by!==currentUser.id && task.assigned_to!==currentUser.id) return false;
+    const assignees = getAssignees(task);
+    if (creator?.role==="gerente" && !task.is_published && task.assigned_by!==currentUser.id && !assignees.includes(currentUser.id)) return false;
     if (task.visible_to?.length>0 && !task.visible_to.includes(currentUser.id)) return false;
     return true;
   }
@@ -450,13 +493,16 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
   }
 
   function canUpdateStatus(task) {
-    return task.assigned_to===currentUser.id||task.assigned_by===currentUser.id||isGerente;
+    const assignees = getAssignees(task);
+    return assignees.includes(currentUser.id)||task.assigned_by===currentUser.id||isGerente;
   }
 
   // Notificaciones
   const notifications = [];
   tasks.forEach(t => {
     if (!isTaskVisible(t)) return;
+    const assignees = getAssignees(t);
+    if (!assignees.includes(currentUser.id) && t.assigned_by!==currentUser.id && !isGerente) return;
     const dl = daysLeft(t.due_date);
     if (t.status!=="completado") {
       if (dl!==null&&dl<=0) notifications.push({id:`ov-${t.id}`,type:"error",  msg:`"${t.title}" está VENCIDA`});
@@ -512,7 +558,9 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
   // Filtros
   const visibleTasks = tasks.filter(t => isTaskVisible(t));
   const filteredTasks = [...visibleTasks].filter(t => {
-    if (taskScope==="mine" && t.assigned_to!==currentUser.id && t.assigned_by!==currentUser.id) return false;
+    const assignees = getAssignees(t);
+    if (taskScope==="mine" && !assignees.includes(currentUser.id) && t.assigned_by!==currentUser.id) return false;
+    if (filterPerson!=="all" && !assignees.includes(parseInt(filterPerson))) return false;
     if (activeStat==="pendiente"  && t.status!=="pendiente") return false;
     if (activeStat==="en-proceso" && t.status!=="en-proceso") return false;
     if (activeStat==="completado" && t.status!=="completado") return false;
@@ -680,6 +728,10 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
                 <option value="all">Cartera</option>
                 {carteras.map(c=><option key={c} value={c}>{c}</option>)}
               </select>
+              <select className="input" style={{width:"auto",fontSize:12,padding:"7px 12px"}} value={filterPerson} onChange={e=>setFilterPerson(e.target.value)}>
+                <option value="all">Persona</option>
+                {users.map(u=><option key={u.id} value={u.id}>{u.name.split(" ")[0]}</option>)}
+              </select>
               <select className="input" style={{width:"auto",fontSize:12,padding:"7px 12px"}} value={filterPriority} onChange={e=>setFilterPriority(e.target.value)}>
                 <option value="all">Prioridad</option>
                 {PRIORITIES.map(p=><option key={p.value} value={p.value}>{p.label}</option>)}
@@ -703,7 +755,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
               </div>
             )}
             {filteredTasks.map(task=>{
-              const assignee    = getUser(task.assigned_to);
+              const assignees   = getAssignees(task).map(id=>getUser(id)).filter(Boolean);
               const assigner    = getUser(task.assigned_by);
               const prio        = PRIORITIES.find(p=>p.value===task.priority);
               const dl          = daysLeft(task.due_date);
@@ -716,9 +768,13 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
               return (
                 <div key={task.id} className="task-row" style={{borderLeft:`3px solid ${isOver?"#FF4D4D":task.status==="completado"?"#30D15844":"transparent"}`}}>
                   <div style={{display:"flex",alignItems:"flex-start",gap:10}}>
-                    {assignee&&(
-                      <div className="avatar" style={{width:34,height:34,background:assignee.color+"22",color:assignee.color,fontSize:11,marginTop:2,flexShrink:0}}>{assignee.avatar}</div>
-                    )}
+                    {/* Avatars — show up to 3 */}
+                    <div style={{display:"flex",flexDirection:"column",gap:2,flexShrink:0,marginTop:2}}>
+                      {assignees.slice(0,3).map(u=>(
+                        <div key={u.id} className="avatar" style={{width:28,height:28,background:u.color+"22",color:u.color,fontSize:9}}>{u.avatar}</div>
+                      ))}
+                      {assignees.length>3&&<div style={{width:28,height:18,background:"#1E2130",borderRadius:4,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:"#4A5178",fontWeight:700}}>+{assignees.length-3}</div>}
+                    </div>
                     <div style={{flex:1,minWidth:0}}>
                       {/* Title row */}
                       <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:4}}>
@@ -741,10 +797,10 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
                         {task.start_date&&<span style={{color:"#30D158"}}>● {fmtShort(task.start_date)}</span>}
                         {task.due_date&&<span style={{color:isOver?"#FF4D4D":"#4A5178"}}>◎ {fmtDate(task.due_date)}{task.task_time&&<span style={{color:"#8891B0"}}> {task.task_time}</span>}</span>}
                         {assigner&&<span>↑ <span style={{color:assigner.color}}>{assigner.role==="gerente"?"Gte":assigner.name.split(" ")[0]}</span></span>}
-                        {assignee&&<span>→ <span style={{color:assignee.color}}>{assignee.name.split(" ")[0]}</span></span>}
+                        {assignees.length>0&&<span>→ {assignees.map((u,i)=><span key={u.id}>{i>0?", ":""}<span style={{color:u.color}}>{u.name.split(" ")[0]}</span></span>)}</span>}
                         {/* Conflict indicator on row */}
                         {task.task_time&&(()=>{
-                          const rowConflicts = detectConflicts({date:task.due_date,time:task.task_time,excludeId:task.id,excludeType:"task",userIds:[task.assigned_to],tasks,meetings,users});
+                          const rowConflicts = detectConflicts({date:task.due_date,time:task.task_time,excludeId:task.id,excludeType:"task",userIds:getAssignees(task),tasks,meetings,users});
                           return rowConflicts.length>0?(
                             <span style={{color:"#FF9500",fontWeight:800,fontSize:10,background:"rgba(255,149,0,.1)",border:"1px solid rgba(255,149,0,.3)",borderRadius:4,padding:"1px 6px"}}>
                               ⚠ Conflicto
@@ -984,12 +1040,10 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
         <TaskModal mode="create" currentUser={currentUser} users={users} tasks={tasks} meetings={meetings} carteras={carteras} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} onClose={()=>setShowNewTask(false)}
           onSave={async form=>{
             const assignees = Array.isArray(form.assignedTo)?form.assignedTo:[form.assignedTo];
-            for(const uid of assignees){
-              const data={title:form.title,description:form.description,assigned_to:uid,assigned_by:currentUser.id,priority:form.priority,status:"pendiente",due_date:form.due_date,start_date:form.start_date||null,task_time:form.task_time||null,cartera:form.cartera,is_published:currentUser.role!=="gerente"?true:(form.is_published??true),recurrence:form.recurrence||null,recurrence_days:form.recurrence_days||null,recurrence_end:form.recurrence_end||null,notify_before:form.notify_before||null};
-              const res=await db.insert("tasks",data);
-              if(Array.isArray(res)&&res[0]){ setTasks(p=>[res[0],...p]); await logHistory(res[0].id,"created","",form.title); }
-            }
-            setShowNewTask(false); showToast(`${assignees.length>1?assignees.length+" tareas creadas":"Tarea creada"} ✓`);
+            const data={title:form.title,description:form.description,assigned_to:assignees,assigned_by:currentUser.id,priority:form.priority,status:"pendiente",due_date:form.due_date,start_date:form.start_date||null,task_time:form.task_time||null,cartera:form.cartera,is_published:currentUser.role!=="gerente"?true:(form.is_published??true),recurrence:form.recurrence||null,recurrence_days:form.recurrence_days||null,recurrence_end:form.recurrence_end||null,notify_before:form.notify_before||null};
+            const res=await db.insert("tasks",data);
+            if(Array.isArray(res)&&res[0]){ setTasks(p=>[res[0],...p]); await logHistory(res[0].id,"created","",form.title); }
+            setShowNewTask(false); showToast("Tarea creada ✓");
           }}
         />
       )}
@@ -997,7 +1051,8 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
       {editingTask&&(
         <TaskModal mode="edit" task={editingTask} currentUser={currentUser} users={users} tasks={tasks} meetings={meetings} carteras={carteras} getRoleLabel={getRoleLabel} getRoleColor={getRoleColor} onClose={()=>setEditingTask(null)}
           onSave={async form=>{
-            const data={title:form.title,description:form.description,assigned_to:Array.isArray(form.assignedTo)?form.assignedTo[0]:form.assignedTo,priority:form.priority,due_date:form.due_date,start_date:form.start_date||null,task_time:form.task_time||null,cartera:form.cartera,recurrence:form.recurrence||null,recurrence_days:form.recurrence_days||null,recurrence_end:form.recurrence_end||null,notify_before:form.notify_before||null};
+            const assignees = Array.isArray(form.assignedTo)?form.assignedTo:[form.assignedTo];
+            const data={title:form.title,description:form.description,assigned_to:assignees,priority:form.priority,due_date:form.due_date,start_date:form.start_date||null,task_time:form.task_time||null,cartera:form.cartera,recurrence:form.recurrence||null,recurrence_days:form.recurrence_days||null,recurrence_end:form.recurrence_end||null,notify_before:form.notify_before||null};
             await db.update("tasks",editingTask.id,data);
             await logHistory(editingTask.id,"edit","","Editada");
             setTasks(p=>p.map(t=>t.id===editingTask.id?{...t,...data}:t));
@@ -1064,7 +1119,7 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
             {calSelectedItem.type==="task"?(()=>{
               const t=calSelectedItem;
               const prio=PRIORITIES.find(p=>p.value===t.priority);
-              const assignee=users.find(u=>u.id===t.assigned_to);
+              const assignees=(Array.isArray(t.assigned_to)?t.assigned_to:(t.assigned_to?[t.assigned_to]:[])).map(id=>users.find(u=>u.id===id)).filter(Boolean);
               const assigner=users.find(u=>u.id===t.assigned_by);
               const dl=daysLeft(t.due_date);
               return (
@@ -1076,10 +1131,11 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
                   </div>
                   {t.description&&<div style={{fontSize:13,color:"#8891B0",marginBottom:12,lineHeight:1.6}}>{t.description}</div>}
                   <div style={{display:"flex",flexDirection:"column",gap:7,marginBottom:16}}>
-                    {assignee&&<div style={{display:"flex",gap:8,alignItems:"center",fontSize:12}}><span style={{color:"#4A5178",fontWeight:700,width:80}}>Responsable</span><div className="avatar" style={{width:20,height:20,background:assignee.color+"22",color:assignee.color,fontSize:8}}>{assignee.avatar}</div><span style={{fontWeight:600}}>{assignee.name}</span></div>}
+                    {assignees.length>0&&<div style={{fontSize:12}}><span style={{color:"#4A5178",fontWeight:700}}>Responsables: </span>{assignees.map((u,i)=><span key={u.id}>{i>0?", ":""}<span style={{color:u.color}}>{u.name.split(" ")[0]}</span></span>)}</div>}
                     {assigner&&<div style={{fontSize:12,color:"#4A5178"}}><span style={{fontWeight:700}}>Asignado por: </span><span style={{color:assigner.color}}>{assigner.name.split(" ")[0]}</span></div>}
                     {t.due_date&&<div style={{fontSize:12,color:dl!==null&&dl<=0?"#FF4D4D":"#8891B0"}}><span style={{fontWeight:700,color:"#4A5178"}}>Vence: </span>{fmtDate(t.due_date)}{t.task_time&&` a las ${t.task_time}`}{dl!==null&&dl<=0&&" · VENCIDA"}</div>}
                     {t.cartera&&<div style={{fontSize:12,color:"#8891B0"}}><span style={{fontWeight:700,color:"#4A5178"}}>Cartera: </span>{t.cartera}</div>}
+                    {t.recurrence&&<div style={{fontSize:12,color:"#BF5AF2"}}><span style={{fontWeight:700,color:"#4A5178"}}>Recurrencia: </span>🔁 {t.recurrence}{t.recurrence_end&&` hasta ${fmtDate(t.recurrence_end)}`}</div>}
                     <div style={{fontSize:12}}><span style={{fontWeight:700,color:"#4A5178"}}>Estado: </span><span style={{color:t.status==="completado"?"#30D158":t.status==="en-proceso"?"#FF9500":"#8891B0",fontWeight:700}}>{t.status}</span></div>
                   </div>
                   <button className="btn btn-glass" style={{width:"100%",justifyContent:"center"}} onClick={()=>setCalSelectedItem(null)}>Cerrar</button>
@@ -1143,6 +1199,20 @@ function CalendarView({ tasks, meetings, users, calDate, setCalDate, calView, se
     for(let i=0;i<firstDay;i++) cells.push(null);
     for(let d=1;d<=daysInMonth;d++) cells.push(d);
 
+    const rangeStart = dayStr(year,month,1);
+    const rangeEnd   = dayStr(year,month,daysInMonth);
+
+    // Expand recurring items into a map: date -> [items]
+    const tasksByDay = {}, meetsByDay = {};
+    tasks.forEach(t => {
+      const dates = expandRecurring({...t, date: t.due_date}, rangeStart, rangeEnd);
+      dates.forEach(ds => { if(!tasksByDay[ds]) tasksByDay[ds]=[]; tasksByDay[ds].push(t); });
+    });
+    meetings.forEach(m => {
+      const dates = expandRecurring(m, rangeStart, rangeEnd);
+      dates.forEach(ds => { if(!meetsByDay[ds]) meetsByDay[ds]=[]; meetsByDay[ds].push(m); });
+    });
+
     return (
       <>
         <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4,marginBottom:6}}>
@@ -1152,8 +1222,8 @@ function CalendarView({ tasks, meetings, users, calDate, setCalDate, calView, se
           {cells.map((d,i)=>{
             if(!d) return <div key={i}/>;
             const ds        = dayStr(year,month,d);
-            const dayTasks  = tasks.filter(t=>t.due_date===ds);
-            const dayMeets  = meetings.filter(m=>m.date===ds);
+            const dayTasks  = tasksByDay[ds]||[];
+            const dayMeets  = meetsByDay[ds]||[];
             const isToday   = ds===today;
             const hasItems  = dayTasks.length>0||dayMeets.length>0;
             return (
@@ -1161,11 +1231,11 @@ function CalendarView({ tasks, meetings, users, calDate, setCalDate, calView, se
                 <div style={{fontSize:12,fontWeight:isToday?800:600,color:isToday?"#FF4D4D":"#8891B0",marginBottom:4,lineHeight:1}}>{d}</div>
                 {dayTasks.slice(0,2).map(t=>{
                   const prio=PRIORITIES.find(p=>p.value===t.priority);
-                  return <div key={t.id} className="cal-event" style={{background:prio?prio.bg:"#1E2130",color:prio?prio.color:"#8891B0",cursor:"pointer"}} title={t.title} onClick={e=>{e.stopPropagation();onItemClick({type:"task",...t});}}>{t.title}</div>;
+                  return <div key={t.id+ds} className="cal-event" style={{background:prio?prio.bg:"#1E2130",color:prio?prio.color:"#8891B0",cursor:"pointer"}} title={t.title} onClick={e=>{e.stopPropagation();onItemClick({type:"task",...t});}}>{t.recurrence&&"🔁 "}{t.title}</div>;
                 })}
                 {dayMeets.slice(0,1).map(m=>{
                   const mt=MEET_TYPES[m.type]||MEET_TYPES.otro;
-                  return <div key={m.id} className="cal-event" style={{background:mt.color+"18",color:mt.color,cursor:"pointer"}} title={m.title} onClick={e=>{e.stopPropagation();onItemClick({type:"meeting",...m});}}>{mt.icon} {m.title}</div>;
+                  return <div key={m.id+ds} className="cal-event" style={{background:mt.color+"18",color:mt.color,cursor:"pointer"}} title={m.title} onClick={e=>{e.stopPropagation();onItemClick({type:"meeting",...m});}}>{mt.icon}{m.recurrence&&"🔁"} {m.title}</div>;
                 })}
                 {(dayTasks.length+dayMeets.length)>3&&<div style={{fontSize:9,color:"#4A5178",fontWeight:700}}>+{dayTasks.length+dayMeets.length-3}</div>}
               </div>
@@ -1319,15 +1389,16 @@ function CalendarView({ tasks, meetings, users, calDate, setCalDate, calView, se
 function TaskModal({ mode, task, currentUser, users, tasks, meetings, carteras, getRoleLabel, getRoleColor, onClose, onSave }) {
   const init = task ? {
     title:task.title||"", description:task.description||"",
-    assignedTo:[task.assigned_to], priority:task.priority||"media",
+    assignedTo: Array.isArray(task.assigned_to) ? task.assigned_to : (task.assigned_to ? [task.assigned_to] : []),
+    priority:task.priority||"media",
     due_date:task.due_date||"", start_date:task.start_date||"",
     task_time:task.task_time||"",
-    cartera:task.cartera||"Cartera Vencida", is_published:task.is_published??true,
+    cartera:task.cartera||carteras[0]||"", is_published:task.is_published??true,
     recurrence:task.recurrence||"", recurrence_days:task.recurrence_days||[], recurrence_end:task.recurrence_end||"",
     notify_before:task.notify_before||""
   } : {
     title:"", description:"", assignedTo:[], priority:"media",
-    due_date:"", start_date:"", task_time:"", cartera:"Cartera Vencida", is_published:true,
+    due_date:"", start_date:"", task_time:"", cartera:carteras[0]||"", is_published:true,
     recurrence:"", recurrence_days:[], recurrence_end:"", notify_before:""
   };
   const [form,      setForm]      = useState(init);
@@ -1349,7 +1420,7 @@ function TaskModal({ mode, task, currentUser, users, tasks, meetings, carteras, 
       users
     });
     setConflicts(found);
-  }, [form.due_date, form.task_time, form.assignedTo]);
+  }, [form.due_date, form.task_time, JSON.stringify(form.assignedTo)]);
 
   const toggleA = id => setForm(f=>({...f,assignedTo:f.assignedTo.includes(id)?f.assignedTo.filter(x=>x!==id):[...f.assignedTo,id]}));
   const toggleD = d => setForm(f=>({...f,recurrence_days:f.recurrence_days.includes(d)?f.recurrence_days.filter(x=>x!==d):[...f.recurrence_days,d]}));
@@ -1675,7 +1746,7 @@ function ManageUsers({ users, onRefresh, showToast, roles, saveRoles, carteras, 
               {editCartera?.idx===i?(
                 <>
                   <input className="input" style={{flex:1,fontSize:12,padding:"7px 10px"}} value={editCartera.val} onChange={e=>setEditCartera({idx:i,val:e.target.value})} autoFocus />
-                  <button className="btn btn-red" style={{padding:"6px 12px",fontSize:11}} onClick={()=>{const n=[...carteras];n[i]=editCartera.val.trim()||c;saveCarteras(n);setEditCartera(null);showToast("Cartera actualizada ✓");}}>✓</button>
+                  <button className="btn btn-red" style={{padding:"6px 12px",fontSize:11}} onClick={()=>{const n=[...carteras];n[editCartera.idx]=editCartera.val.trim()||c;saveCarteras(n);setEditCartera(null);showToast("Cartera actualizada ✓");}}>✓</button>
                   <button className="btn btn-glass" style={{padding:"6px 10px",fontSize:11}} onClick={()=>setEditCartera(null)}>✕</button>
                 </>
               ):(
@@ -1740,8 +1811,11 @@ function NewMeetingModal({ currentUser, users, tasks, meetings, editingMeeting, 
   const init = editingMeeting ? {
     title:editingMeeting.title||"", date:editingMeeting.date||"", time:editingMeeting.time||"",
     type:editingMeeting.type||"seguimiento", notes:editingMeeting.notes||"",
-    participants:editingMeeting.participants||[currentUser.id], notify_before:editingMeeting.notify_before||[]
-  } : {title:"",date:"",time:"",type:"seguimiento",notes:"",participants:[currentUser.id],notify_before:[]};
+    participants:editingMeeting.participants||[currentUser.id], notify_before:editingMeeting.notify_before||[],
+    recurrence:editingMeeting.recurrence||"", recurrence_days:editingMeeting.recurrence_days||[], recurrence_end:editingMeeting.recurrence_end||""
+  } : {title:"",date:"",time:"",type:"seguimiento",notes:"",participants:[currentUser.id],notify_before:[],
+    recurrence:"", recurrence_days:[], recurrence_end:""
+  };
 
   const [form,      setForm]      = useState(init);
   const [conflicts, setConflicts] = useState([]);
@@ -1778,6 +1852,28 @@ function NewMeetingModal({ currentUser, users, tasks, meetings, editingMeeting, 
           </div>
           <div><label className="label">Tipo</label><select className="input" value={form.type} onChange={e=>setForm({...form,type:e.target.value})}>{Object.entries(MEET_TYPES).map(([k,v])=><option key={k} value={k}>{v.icon} {v.label}</option>)}</select></div>
           <div><label className="label">Agenda</label><textarea className="input" rows={2} placeholder="Puntos a tratar..." value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})} style={{resize:"vertical"}} /></div>
+
+          {/* Recurrencia reunión */}
+          <div><label className="label">Recurrencia</label>
+            <select className="input" value={form.recurrence} onChange={e=>setForm({...form,recurrence:e.target.value})}>
+              <option value="">Sin recurrencia</option>
+              <option value="diaria">Diaria</option>
+              <option value="semanal">Semanal</option>
+              <option value="quincenal">Quincenal</option>
+              <option value="mensual">Mensual</option>
+            </select>
+          </div>
+          {form.recurrence==="semanal"&&(
+            <div>
+              <label className="label">Días</label>
+              <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                {[["L",1],["M",2],["X",3],["J",4],["V",5],["S",6],["D",0]].map(([l,d])=>(
+                  <button key={d} onClick={()=>setForm(f=>({...f,recurrence_days:f.recurrence_days.includes(d)?f.recurrence_days.filter(x=>x!==d):[...f.recurrence_days,d]}))} style={{width:34,height:34,borderRadius:8,border:"1.5px solid",fontSize:12,fontWeight:800,cursor:"pointer",background:form.recurrence_days.includes(d)?"rgba(10,132,255,.15)":"#0A0B10",color:form.recurrence_days.includes(d)?"#0A84FF":"#4A5178",borderColor:form.recurrence_days.includes(d)?"rgba(10,132,255,.4)":"#1E2130"}}>{l}</button>
+                ))}
+              </div>
+            </div>
+          )}
+          {form.recurrence&&<div><label className="label">Repetir hasta</label><input type="date" className="input" value={form.recurrence_end} onChange={e=>setForm({...form,recurrence_end:e.target.value})} /></div>}
 
           {/* CONFLICT BANNER */}
           {conflicts.length > 0 && (
