@@ -405,7 +405,17 @@ export default function App() {
 
       // Roles: igual
       if (Array.isArray(r) && r.length > 0) {
-        setRoles(r);
+        // Migración: garantizar campo admin en roles cargados de Supabase
+        const migrated = r.map(role => {
+          if (role.admin !== undefined) return role;
+          const def = DEFAULT_ROLES.find(d => d.key === role.key);
+          return { ...role, admin: def?.admin ?? false };
+        });
+        setRoles(migrated);
+        // Si hubo migración, guardar de vuelta
+        if (migrated.some((m,i) => m.admin !== r[i]?.admin)) {
+          await db.setConfig("roles", migrated);
+        }
       } else {
         try {
           const local = localStorage.getItem("ct_roles");
