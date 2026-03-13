@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
 // ─── BREVO EMAIL ─────────────────────────────────────────────────────────
-const BREVO_KEY = "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";
+const BREVO_KEY = process.env.REACT_APP_BREVO_KEY;
 const BREVO_FROM = { name: "CobrosTeam", email: "cesar.zambrano@spearcontact.com" };
 
 const sendEmail = async ({ to, subject, html }) => {
