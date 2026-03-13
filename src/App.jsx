@@ -1,5 +1,80 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
+// ─── BREVO EMAIL ─────────────────────────────────────────────────────────
+const BREVO_KEY = "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";
+const BREVO_FROM = { name: "CobrosTeam", email: "cesar.zambrano@spearcontact.com" };
+
+const sendEmail = async ({ to, subject, html }) => {
+  try {
+    await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: {
+        "api-key": BREVO_KEY,
+        "Content-Type": "application/json",
+        "accept": "application/json"
+      },
+      body: JSON.stringify({
+        sender: BREVO_FROM,
+        to: Array.isArray(to) ? to : [to],
+        subject,
+        htmlContent: html
+      })
+    });
+  } catch(e) { console.warn("Email error:", e); }
+};
+
+const emailTareaAsignada = ({ tarea, asignado, asignador }) => sendEmail({
+  to: [{ name: asignado.name, email: asignado.email }],
+  subject: `📋 Nueva tarea asignada: ${tarea.title}`,
+  html: `
+    <div style="font-family:sans-serif;max-width:520px;margin:0 auto;background:#08090E;color:#F0F2FF;border-radius:12px;overflow:hidden">
+      <div style="background:linear-gradient(135deg,#1E2130,#161825);padding:24px 28px;border-bottom:1px solid #1E2130">
+        <div style="font-size:22px;font-weight:800;letter-spacing:-0.5px">⚡ CobrosTeam</div>
+      </div>
+      <div style="padding:28px">
+        <div style="font-size:18px;font-weight:700;margin-bottom:6px">Nueva tarea asignada</div>
+        <div style="font-size:13px;color:#8891B0;margin-bottom:20px">Hola ${asignado.name.split(" ")[0]}, tienes una nueva tarea.</div>
+        <div style="background:#0F1117;border:1px solid #1E2130;border-left:4px solid #0A84FF;border-radius:10px;padding:18px;margin-bottom:20px">
+          <div style="font-size:16px;font-weight:800;margin-bottom:10px">${tarea.title}</div>
+          ${tarea.description ? `<div style="font-size:13px;color:#8891B0;margin-bottom:12px">${tarea.description}</div>` : ""}
+          <div style="display:flex;gap:16px;flex-wrap:wrap">
+            ${tarea.due_date ? `<div style="font-size:12px"><span style="color:#4A5178;font-weight:600">Fecha límite</span><br/><span style="font-weight:700">${tarea.due_date}</span></div>` : ""}
+            ${tarea.task_time ? `<div style="font-size:12px"><span style="color:#4A5178;font-weight:600">Hora</span><br/><span style="font-weight:700">${tarea.task_time}${tarea.task_time_end ? `–${tarea.task_time_end}` : ""}</span></div>` : ""}
+            ${tarea.priority ? `<div style="font-size:12px"><span style="color:#4A5178;font-weight:600">Prioridad</span><br/><span style="font-weight:700;text-transform:capitalize">${tarea.priority}</span></div>` : ""}
+            ${tarea.cartera ? `<div style="font-size:12px"><span style="color:#4A5178;font-weight:600">Cartera</span><br/><span style="font-weight:700">${tarea.cartera}</span></div>` : ""}
+          </div>
+        </div>
+        <div style="font-size:12px;color:#4A5178">Asignada por <strong style="color:#8891B0">${asignador.name}</strong></div>
+      </div>
+      <div style="padding:16px 28px;background:#0F1117;border-top:1px solid #1E2130;font-size:11px;color:#4A5178">CobrosTeam · Notificación automática</div>
+    </div>`
+});
+
+const emailReunionAgendada = ({ reunion, participante, creador }) => sendEmail({
+  to: [{ name: participante.name, email: participante.email }],
+  subject: `📅 Reunión agendada: ${reunion.title}`,
+  html: `
+    <div style="font-family:sans-serif;max-width:520px;margin:0 auto;background:#08090E;color:#F0F2FF;border-radius:12px;overflow:hidden">
+      <div style="background:linear-gradient(135deg,#1E2130,#161825);padding:24px 28px;border-bottom:1px solid #1E2130">
+        <div style="font-size:22px;font-weight:800;letter-spacing:-0.5px">⚡ CobrosTeam</div>
+      </div>
+      <div style="padding:28px">
+        <div style="font-size:18px;font-weight:700;margin-bottom:6px">Nueva reunión agendada</div>
+        <div style="font-size:13px;color:#8891B0;margin-bottom:20px">Hola ${participante.name.split(" ")[0]}, fuiste agregado a una reunión.</div>
+        <div style="background:#0F1117;border:1px solid #1E2130;border-left:4px solid #FF9500;border-radius:10px;padding:18px;margin-bottom:20px">
+          <div style="font-size:16px;font-weight:800;margin-bottom:10px">${reunion.title}</div>
+          <div style="display:flex;gap:16px;flex-wrap:wrap">
+            <div style="font-size:12px"><span style="color:#4A5178;font-weight:600">Fecha</span><br/><span style="font-weight:700">${reunion.date}</span></div>
+            <div style="font-size:12px"><span style="color:#4A5178;font-weight:600">Hora</span><br/><span style="font-weight:700">${reunion.time}${reunion.time_end ? `–${reunion.time_end}` : ""}</span></div>
+            ${reunion.notes ? `<div style="font-size:12px;flex:1"><span style="color:#4A5178;font-weight:600">Notas</span><br/><span style="font-weight:700">${reunion.notes}</span></div>` : ""}
+          </div>
+        </div>
+        <div style="font-size:12px;color:#4A5178">Convocada por <strong style="color:#8891B0">${creador.name}</strong></div>
+      </div>
+      <div style="padding:16px 28px;background:#0F1117;border-top:1px solid #1E2130;font-size:11px;color:#4A5178">CobrosTeam · Notificación automática</div>
+    </div>`
+});
+
 // ─── SUPABASE ────────────────────────────────────────────────────────────
 const SUPA_URL = "https://glwjigzgsrmaqkfnnvve.supabase.co";
 const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdsd2ppZ3pnc3JtYXFrZm5udnZlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMyMzQzNzksImV4cCI6MjA4ODgxMDM3OX0.Nl7ZNlxUSHDui_P_XDO9JckHqjKkgaVycb7Yl-7pz2Q";
@@ -1286,7 +1361,17 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
             }
             const data={title:form.title,description:form.description,assigned_to:assignees,assigned_by:currentUser.id,priority:form.priority,status:"pendiente",due_date:form.due_date,start_date:form.start_date||null,task_time:form.task_time||null,task_time_end:form.task_time_end||null,cartera:form.cartera,is_published:!isAdmin?true:(form.is_published??true),recurrence:form.recurrence||null,recurrence_days:form.recurrence_days||null,recurrence_end:form.recurrence_end||null,notify_before:form.notify_before||null};
             const res=await db.insert("tasks",data);
-            if(Array.isArray(res)&&res[0]){ setTasks(p=>[normalizeTask(res[0]),...p]); await logHistory(res[0].id,"created","",form.title); }
+            if(Array.isArray(res)&&res[0]){
+              setTasks(p=>[normalizeTask(res[0]),...p]);
+              await logHistory(res[0].id,"created","",form.title);
+              // Enviar email a cada asignado (solo si tiene email y no es quien asigna)
+              assignees.forEach(uid => {
+                const asignado = users.find(u=>u.id===uid||u.id===Number(uid));
+                if(asignado?.email && asignado.id !== currentUser.id) {
+                  emailTareaAsignada({ tarea: res[0], asignado, asignador: currentUser });
+                }
+              });
+            }
             setShowNewTask(false); showToast("Tarea creada ✓"); refreshTasks();
           }}
         />
@@ -1315,7 +1400,16 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
               notify_before:   form.notify_before?.length   ? form.notify_before   : null,
             };
             const res=await db.insert("meetings",{...clean,created_by:currentUser.id});
-            if(Array.isArray(res)&&res[0]) setMeetings(p=>[normalizeMeeting(res[0]),...p]);
+            if(Array.isArray(res)&&res[0]){
+              setMeetings(p=>[normalizeMeeting(res[0]),...p]);
+              // Email a participantes
+              (clean.participants||[]).forEach(uid => {
+                const participante = users.find(u=>u.id===uid||u.id===Number(uid));
+                if(participante?.email && participante.id !== currentUser.id) {
+                  emailReunionAgendada({ reunion: res[0], participante, creador: currentUser });
+                }
+              });
+            }
             setShowNewMeeting(false); showToast("Reunión agendada ✓"); refreshMeetings();
           }}
         />
@@ -1352,13 +1446,26 @@ function Dashboard({ currentUser, users, refreshUsers, onLogout, carteras, saveC
               const f = perPersonForms[0];
               const data={title:f.title,description:f.description,assigned_to:splitTasks.assignees,assigned_by:currentUser.id,priority:f.priority,status:"pendiente",due_date:f.due_date,start_date:f.start_date||null,task_time:f.task_time||null,task_time_end:f.task_time_end||null,cartera:f.cartera,is_published:!isAdmin?true:true,recurrence:f.recurrence||null,recurrence_days:f.recurrence_days||null,recurrence_end:f.recurrence_end||null,notify_before:f.notify_before||null};
               const res=await db.insert("tasks",data);
-              if(Array.isArray(res)&&res[0]){ setTasks(p=>[normalizeTask(res[0]),...p]); await logHistory(res[0].id,"created","",f.title); }
+              if(Array.isArray(res)&&res[0]){
+                setTasks(p=>[normalizeTask(res[0]),...p]);
+                await logHistory(res[0].id,"created","",f.title);
+                splitTasks.assignees.forEach(uid => {
+                  const asignado = users.find(u=>u.id===uid||u.id===Number(uid));
+                  if(asignado?.email && asignado.id !== currentUser.id)
+                    emailTareaAsignada({ tarea: res[0], asignado, asignador: currentUser });
+                });
+              }
             } else {
               // Individual task per person
               for (const f of perPersonForms) {
                 const data={title:f.title,description:f.description,assigned_to:[f.userId],assigned_by:currentUser.id,priority:f.priority,status:"pendiente",due_date:f.due_date,start_date:f.start_date||null,task_time:f.task_time||null,task_time_end:f.task_time_end||null,cartera:f.cartera,is_published:!isAdmin?true:true,recurrence:null,recurrence_days:null,recurrence_end:null,notify_before:f.notify_before||null};
                 const res=await db.insert("tasks",data);
-                if(Array.isArray(res)&&res[0]){ await logHistory(res[0].id,"created","",f.title); }
+                if(Array.isArray(res)&&res[0]){
+                  await logHistory(res[0].id,"created","",f.title);
+                  const asignado = users.find(u=>u.id===f.userId||u.id===Number(f.userId));
+                  if(asignado?.email && asignado.id !== currentUser.id)
+                    emailTareaAsignada({ tarea: res[0], asignado, asignador: currentUser });
+                }
               }
               await refreshTasks();
             }
